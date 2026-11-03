@@ -38,7 +38,7 @@ The setup script creates `.venv`, installs the pinned dependencies and runs a Py
 ```bash
 git clone https://github.com/ArB-86/ML-Based-Cyber-Attack-Detection-and-Incident-Investigation-using-Agentic-AI_.git
 cd ML-Based-Cyber-Attack-Detection-and-Incident-Investigation-using-Agentic-AI_
-python3.12 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements-benchmark.txt pytest
