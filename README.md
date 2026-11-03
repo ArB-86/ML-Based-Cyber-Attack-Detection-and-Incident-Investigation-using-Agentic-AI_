@@ -64,7 +64,7 @@ data/
         └── Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv
 ```
 
-The filename spelling and capitalization above matter. In particular, the dataset export uses **Infilteration** in the filename. If the ZIP extracts the files into a nested folder, pass that nested folder as `--data-dir`.
+The filename spelling and capitalization above matter. In particular, the dataset export uses **Infilteration** in the filename. If the ZIP extracts the files into a nested folder, pass that nested folder as the positional dataset-directory argument to `python -m attack_graph.pipeline`, or as `-DataDir` to the Windows PowerShell launcher.
 
 Validate the eight files and their headers before starting the full run:
 
