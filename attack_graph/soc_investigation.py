@@ -2176,6 +2176,11 @@ class AgenticInvestigationAgent:
                         })
 
         all_findings = claims + model_findings
+        proposed_narrative = ""
+        if self.reasoner is not None and reasoner_error is None:
+            raw_narrative = model_response.get("narrative", "")
+            if isinstance(raw_narrative, str):
+                proposed_narrative = raw_narrative.strip()
         return {
             "agent": "AgenticInvestigationAgent",
             "mode": (
@@ -2202,6 +2207,11 @@ class AgenticInvestigationAgent:
             ],
             "tool_calls": trace,
             "findings": all_findings,
+            "model_narrative": proposed_narrative,
+            "model_narrative_status": (
+                "proposed_unverified" if proposed_narrative else "not_available"
+            ),
+            "analyst_validation_required": True,
             "model_findings_proposed": len(model_finding_candidates),
             "model_findings_accepted": len(model_findings),
             "model_findings_rejected": sum(
@@ -2391,7 +2401,16 @@ def _write_report(incidents: list[dict[str, Any]], events: pd.DataFrame, graph: 
             f"- Evidence-linked findings: {len(investigation.get('findings', []))}",
         ])
         if investigation.get("narrative"):
-            lines.append(f"- Analyst synthesis: {investigation['narrative']}")
+            lines.append(f"- Evidence-derived baseline: {investigation['narrative']}")
+        if investigation.get("model_narrative"):
+            lines.extend([
+                "",
+                "**LLM-proposed synthesis (unverified; analyst validation required):**",
+            ])
+            lines.extend(
+                f"> {line}" if line else ">"
+                for line in str(investigation["model_narrative"]).splitlines()
+            )
         for finding in investigation.get("findings", [])[:8]:
             refs = ", ".join(finding.get("evidence_event_ids", []))
             lines.append(f"- {finding['claim']} Evidence: {refs or 'not linked'}")
