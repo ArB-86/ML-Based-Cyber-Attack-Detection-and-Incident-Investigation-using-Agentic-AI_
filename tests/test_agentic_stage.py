@@ -71,9 +71,12 @@ def test_ai_only_stage_reuses_existing_events_graph_and_risk(tmp_path):
     agent = payload["incidents"][0]["investigation_agent"]
     assert agent["mode"] == "tool_assisted_llm"
     assert agent["reasoner_calls"][0]["status"] == "success"
-    assert agent["narrative"].startswith("Network-flow evidence")
+    assert agent["model_narrative"].startswith("Network-flow evidence")
+    assert agent["model_narrative_status"] == "proposed_unverified"
     report = (tmp_path / "incident_investigation_report.md").read_text()
     assert "Tool-assisted agent investigation" in report
+    assert "LLM-proposed synthesis (unverified; analyst validation required)" in report
+    assert "Network-flow evidence needs independent analyst corroboration." in report
     assert "tool_assisted_llm" in report
 
     stage_summary = json.loads(
