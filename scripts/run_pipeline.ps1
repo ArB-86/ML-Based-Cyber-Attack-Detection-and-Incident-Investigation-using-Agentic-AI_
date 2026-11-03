@@ -12,27 +12,32 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $RepoRoot
 try {
-    $ResolvedDataDir = Resolve-Path $DataDir -ErrorAction Stop
-    if (-not (Test-Path $ResolvedDataDir -PathType Container)) {
+    $ResolvedDataDir = (Resolve-Path $DataDir -ErrorAction Stop).Path
+    if (-not (Test-Path -LiteralPath $ResolvedDataDir -PathType Container)) {
         throw "DataDir must be a directory: $DataDir"
     }
 
     $VenvPython = Join-Path $RepoRoot ".venv\Scripts\python.exe"
-    if (Test-Path $VenvPython) {
+    if (Test-Path -LiteralPath $VenvPython) {
         $Python = $VenvPython
     } else {
-        $Python = "python"
+        $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $PythonCommand) {
+            throw "Python was not found. Run scripts/setup_windows.ps1 first."
+        }
+        $Python = $PythonCommand.Source
     }
 
+    Write-Host "Python executable: $Python"
     Write-Host "Validating CICIDS2017 input directory ..."
-    & $Python scripts/validate_dataset.py $ResolvedDataDir.Path
+    & $Python scripts/validate_dataset.py $ResolvedDataDir
     if ($LASTEXITCODE -ne 0) {
         throw "Dataset validation failed. Fix the missing files/columns before running the pipeline."
     }
 
     $PipelineArgs = @(
         "-m", "attack_graph.pipeline",
-        $ResolvedDataDir.Path,
+        $ResolvedDataDir,
         "--output-dir", $OutputDir
     )
 
