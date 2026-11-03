@@ -7,14 +7,22 @@ __pycache__/
 venv/
 .env
 .env.*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
 
+# Dataset files and local captures
 data/
 datasets/
-soc_output*/
-mam_demo_output/
 *.parquet
 *.pcap
 *.pcapng
+
+# Generated pipeline and investigation outputs
+outputs/
+soc_output*/
+mam_demo_output/
 *_with_metadata.csv
 incident_investigation.json
 incident_investigation.csv
@@ -25,11 +33,6 @@ pipeline_summary.json
 attack_graph.gexf
 attack_graph.png
 
-# Local model bridge and secrets
+# Local-only bridge modules / credentials
 *ollama*bridge*.py
 *reasoner*local*.py
-
-.DS_Store
-Thumbs.db
-.vscode/
-.idea/
