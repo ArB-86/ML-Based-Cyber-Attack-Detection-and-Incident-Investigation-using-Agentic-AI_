@@ -160,6 +160,69 @@ python -m attack_graph.pipeline --reuse-predictions .\outputs\run_001\cicids_if_
 
 Replay mode **does not retrain Isolation Forest** and does not recompute model performance metrics. It requires the saved `predicted_anomaly` column.
 
+
+## Run only the Agentic AI investigation stage
+
+When another pipeline stage or team member has already generated the detection,
+event, attack-graph and risk-assessment artefacts, run the AI investigator
+**without rerunning those upstream stages**.
+
+The AI-only entry point expects these files together in one existing output
+directory:
+
+~~~
+outputs/run_001/
+├── attack_events.csv
+├── attack_graph.gexf
+├── incident_investigation.json
+├── incident_investigation_report.md
+└── soc_pipeline_manifest.json
+~~~
+
+incident_investigation.json must contain an incidents array. Each incident
+must include its incident_id, event_ids, triage and graph_analysis
+produced by the upstream risk/graph stages. Event IDs must match
+attack_events.csv, and the GEXF must contain the incident node and its
+incident-to-event membership edges. The runner validates these contracts
+before calling the reasoner.
+
+### Run with local Qwen / Ollama
+
+~~~
+ollama pull qwen2.5:7b-instruct
+python -m attack_graph.ollama_reasoner --check
+
+python -m attack_graph.agentic_investigator .\outputs\run_001 --max-incidents 1
+~~~
+
+The AI-only command investigates the highest-priority candidate incident by
+default. It uses the existing read-only SOC tools and evidence-validation
+logic. Model-selected tool calls are bounded and restricted to the selected
+incident; proposed findings are checked against exact event IDs, detector
+provenance and graph relationships.
+
+To investigate every candidate incident:
+
+~~~
+python -m attack_graph.agentic_investigator .\outputs\run_001 --all-incidents
+~~~
+
+To validate the input contract and report generation without making an LLM
+call:
+
+~~~
+python -m attack_graph.agentic_investigator .\outputs\run_001 --deterministic
+~~~
+
+The AI-only stage updates incident_investigation.json and
+incident_investigation_report.md, and writes
+agentic_investigation_summary.json. It also refreshes the agentic counts in
+soc_pipeline_manifest.json and pipeline_summary.json when those files
+exist. It does **not** rerun preprocessing, Isolation Forest, event
+aggregation, event correlation, incident formation, attack-graph construction
+or risk assessment. It does not modify attack_events.csv or
+attack_graph.gexf.
+
 ## 6. What the pipeline does
 
 | Stage | What happens | Main output / purpose |
@@ -237,6 +300,7 @@ attack_graph/
   graph_builder.py                         # graph and GEXF adapter
   soc_investigation.py                     # correlation, incidents, graph, agent, reports
   ollama_reasoner.py                       # local Ollama/Qwen callback
+  agentic_investigator.py                  # AI-only stage for existing SOC outputs
 scripts/
   setup_windows.ps1
   validate_dataset.py
