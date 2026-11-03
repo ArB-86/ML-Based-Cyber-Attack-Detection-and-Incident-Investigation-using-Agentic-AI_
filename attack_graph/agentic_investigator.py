@@ -89,7 +89,12 @@ def _read_inputs(output_dir: Path) -> tuple[dict[str, Any], pd.DataFrame, nx.DiG
         loaded_graph = nx.read_gexf(graph_path)
     except Exception as exc:
         raise ValueError(f"Could not load attack graph from {graph_path}: {exc}") from exc
-    graph = loaded_graph if loaded_graph.is_directed() else nx.DiGraph(loaded_graph)
+    if not loaded_graph.is_directed():
+        raise ValueError(
+            "attack_graph.gexf must be a directed graph so incident/event edge "
+            "direction is preserved."
+        )
+    graph = loaded_graph
 
     event_ids = set(events["event_id"])
     seen_incidents: set[str] = set()
@@ -131,6 +136,15 @@ def _read_inputs(output_dir: Path) -> tuple[dict[str, Any], pd.DataFrame, nx.DiG
         if missing_nodes:
             raise ValueError(
                 f"Graph nodes missing for {incident_id}: {missing_nodes[:10]}"
+            )
+        missing_memberships = [
+            event_id for event_id in member_ids
+            if not graph.has_edge(incident_node, f"event:{event_id}")
+        ]
+        if missing_memberships:
+            raise ValueError(
+                f"Graph is missing incident-to-event membership edges for "
+                f"{incident_id}: {missing_memberships[:10]}"
             )
 
     return payload, events, graph
@@ -196,11 +210,15 @@ def run(
     output_dir: str | Path,
     *,
     reasoner=None,
-    max_incidents: int = 1,
+    max_incidents: int | None = 1,
 ) -> dict[str, Any]:
     """Run AI investigation only; preserve every upstream detection artefact."""
-    if isinstance(max_incidents, bool) or not isinstance(max_incidents, int) or max_incidents < 1:
-        raise ValueError("max_incidents must be a positive integer.")
+    if max_incidents is not None and (
+        isinstance(max_incidents, bool)
+        or not isinstance(max_incidents, int)
+        or max_incidents < 1
+    ):
+        raise ValueError("max_incidents must be a positive integer or None for all incidents.")
 
     out = Path(output_dir)
     if not out.exists() or not out.is_dir():
@@ -212,10 +230,8 @@ def run(
     agent = AgenticInvestigationAgent(tools, reasoner=reasoner)
 
     ordered = sorted(incidents, key=_priority_key)
-    selected_ids = {
-        str(item["incident_id"])
-        for item in ordered[:max_incidents]
-    }
+    selected = ordered if max_incidents is None else ordered[:max_incidents]
+    selected_ids = {str(item["incident_id"]) for item in selected}
     processed: list[dict[str, Any]] = []
 
     for incident in ordered:
@@ -301,6 +317,9 @@ def run(
             manifest_counts = {}
             manifest["counts"] = manifest_counts
         manifest_counts.update(counts)
+        artifacts = manifest.setdefault("artifacts", [])
+        if isinstance(artifacts, list) and "agentic_investigation_summary.json" not in artifacts:
+            artifacts.append("agentic_investigation_summary.json")
         manifest["agentic_investigation_stage"] = {
             "entry_point": "python -m attack_graph.agentic_investigator",
             "upstream_stages_reexecuted": False,
@@ -374,10 +393,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         reasoner = None
-        limit = args.max_incidents
-        if args.all_incidents:
-            limit = 2**31 - 1
-        elif limit < 1:
+        limit = None if args.all_incidents else args.max_incidents
+        if limit is not None and limit < 1:
             raise ValueError("--max-incidents must be at least 1.")
 
         if not args.deterministic:
