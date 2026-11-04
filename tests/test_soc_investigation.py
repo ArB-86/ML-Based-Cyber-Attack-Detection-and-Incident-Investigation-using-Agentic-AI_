@@ -1309,7 +1309,7 @@ def test_reasoner_context_is_compacted_without_reducing_full_evidence_scope(tmp_
         {
             "timestamp": _time(0, second),
             "src_ip": f"10.0.0.{second + 1}",
-            "dst_ip": "10.0.1.1",
+            "dst_ip": f"10.0.0.{second + 2}",
             "protocol": 6,
             "src_port": 51000 + second,
             "dst_port": 443,
