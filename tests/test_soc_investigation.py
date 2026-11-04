@@ -256,6 +256,7 @@ def test_llm_agent_selects_scoped_tools_and_rejects_unsupported_evidence(tmp_pat
                     "confidence": "medium",
                 },
                 {
+                    "claim_type": "host_pivot_lead",
                     "claim": "An unrelated host executed malware.",
                     "evidence_event_ids": ["EVT-999999"],
                     "confidence": "high",
@@ -302,6 +303,13 @@ def test_llm_agent_selects_scoped_tools_and_rejects_unsupported_evidence(tmp_pat
         finding["source"] == "llm_semantic_validated"
         for finding in agent["findings"]
     )
+    rejected = next(
+        item for item in agent["tool_calls"]
+        if item["tool"] == "validate_model_finding"
+        and item["status"] == "rejected"
+    )
+    assert rejected["claim_type"] == "host_pivot_lead"
+    assert rejected["claim"] == "An unrelated host executed malware."
     assert summary["agent_tool_calls"] >= 6
 
 
@@ -442,6 +450,87 @@ def test_agent_investigation_limit_rejects_negative_values(tmp_path):
         )
 
 
+def test_llm_agent_skips_duplicate_tool_requests_across_rounds(tmp_path):
+    flows = pd.DataFrame([
+        {
+            "timestamp": _time(0), "src_ip": "A", "dst_ip": "B", "protocol": 6,
+            "src_port": 50000, "dst_port": 22, "alert": True,
+            "detection_reasons": "BRUTE_FORCE_PATTERN",
+            "alert_sources": "BEHAVIOURAL_RULE", "anomaly_score": 0.01,
+        },
+        {
+            "timestamp": _time(1), "src_ip": "B", "dst_ip": "C", "protocol": 6,
+            "src_port": 22, "dst_port": 445, "alert": True,
+            "detection_reasons": "HIGH_SOURCE_FANOUT",
+            "alert_sources": "BEHAVIOURAL_RULE", "anomaly_score": 0.02,
+        },
+    ])
+
+    calls = []
+
+    def fake_reasoner(context):
+        calls.append(context)
+        call_number = len(calls)
+        query = {
+            "name": "get_correlated_events",
+            "arguments": {
+                "event_id": "EVT-000001",
+                "relation_contains": "host_pivot",
+            },
+        }
+
+        if call_number == 1:
+            pairs = context["evidence_constraints"]["exact_host_pivot_edges"]
+            assert any(
+                pair["from_event"] == "EVT-000001"
+                and pair["to_event"] == "EVT-000002"
+                and pair["pivot_host"] == "B"
+                for pair in pairs
+            )
+            return {
+                "tool_calls": [query],
+                "preliminary_findings": [],
+                "narrative": "Inspect the exact host-pivot relationship.",
+            }
+
+        if call_number == 2:
+            assert len(context["completed_tool_results"]) == 1
+            return {
+                "tool_calls": [query],
+                "evidence_gap_note": "Repeat the same relationship query.",
+            }
+
+        assert call_number == 3
+        assert len(context["completed_tool_results"]) == 1
+        return {
+            "tool_calls": [],
+            "findings": [],
+            "finding_disposition": "no_additional_findings_supported",
+            "finding_disposition_reason": (
+                "The deterministic evidence baseline already records the exact graph relationship."
+            ),
+            "narrative": "No separate model finding is required.",
+        }
+
+    run_soc_investigation(flows, tmp_path, reasoner=fake_reasoner)
+    payload = json.loads((tmp_path / "incident_investigation.json").read_text())
+    agent = payload["incidents"][0]["investigation_agent"]
+
+    assert len(calls) == 3
+    assert agent["llm_tool_requests"] == 2
+    assert agent["llm_tool_calls_executed"] == 1
+    correlated_calls = [
+        item for item in agent["tool_calls"]
+        if item["tool"] == "get_correlated_events"
+    ]
+    assert sum(item["status"] == "success" for item in correlated_calls) == 1
+    assert sum(item["status"] == "skipped" for item in correlated_calls) == 1
+    assert "already executed" in next(
+        item["error"] for item in correlated_calls if item["status"] == "skipped"
+    )
+    assert agent["model_synthesis_status"] == "validated_no_additional_findings"
+
+
 def test_llm_agent_supports_two_bounded_tool_rounds(tmp_path):
     flows = pd.DataFrame([
         {
@@ -537,6 +626,43 @@ def test_llm_agent_supports_two_bounded_tool_rounds(tmp_path):
     assert model_finding["validation_scope"] == "detector_metadata_predicate"
     assert model_finding["claim_semantics_independently_verified"] is True
     assert model_finding["analyst_validation_required"] is True
+
+
+def test_reasoner_evidence_constraints_list_exact_host_pivot_pairs_only():
+    constraints = AgenticInvestigationAgent._compact_reasoner_evidence_constraints({
+        "event_edges": [
+            {
+                "from": "event:E1",
+                "to": "event:E2",
+                "relation": "host_pivot",
+                "pivot_host": "10.0.0.2",
+                "gap_seconds": 60.0,
+            },
+            {
+                "from": "event:E2",
+                "to": "event:E3",
+                "relation": "same_source_temporal",
+                "pivot_host": None,
+                "gap_seconds": 30.0,
+            },
+            {
+                "from": "event:E1",
+                "to": "event:E2",
+                "relation": "host_pivot",
+                "pivot_host": "10.0.0.2",
+                "gap_seconds": 60.0,
+            },
+        ]
+    })
+
+    assert constraints["host_pivot_edge_count"] == 1
+    assert constraints["host_pivot_edges_sampled"] is False
+    assert constraints["exact_host_pivot_edges"] == [{
+        "from_event": "E1",
+        "to_event": "E2",
+        "pivot_host": "10.0.0.2",
+        "gap_seconds": 60.0,
+    }]
 
 
 def test_agent_does_not_promote_preliminary_findings_without_final_validation(tmp_path):
