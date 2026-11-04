@@ -57,3 +57,19 @@ def test_check_ollama_requires_configured_model(monkeypatch):
     )
     with pytest.raises(RuntimeError, match="not installed"):
         ollama_reasoner.check_ollama()
+
+
+def test_reasoner_uses_bounded_default_context_and_output_budget(monkeypatch):
+    monkeypatch.delenv("OLLAMA_NUM_CTX", raising=False)
+    monkeypatch.delenv("OLLAMA_NUM_PREDICT", raising=False)
+    captured = {}
+
+    def fake_request(url, payload=None, *, timeout=900):
+        captured["payload"] = payload
+        return {"message": {"content": '{"tool_calls": [], "findings": [], "narrative": "ok"}'}}
+
+    monkeypatch.setattr(ollama_reasoner, "_request_json", fake_request)
+    ollama_reasoner.reasoner({"task": "small test"})
+
+    assert captured["payload"]["options"]["num_ctx"] == 8192
+    assert captured["payload"]["options"]["num_predict"] == 2048
