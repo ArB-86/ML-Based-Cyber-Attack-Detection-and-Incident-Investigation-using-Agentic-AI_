@@ -1279,6 +1279,22 @@ _SUPPORTED_MODEL_CLAIM_TYPES = {
     "host_pivot_lead",
 }
 
+_MODEL_CLAIM_TYPE_GUIDANCE = (
+    "Use ONLY these exact claim_type values and conditions: "
+    "isolation_forest_anomaly (cited events must carry both the "
+    "ISOLATION_FOREST_ANOMALY detection reason and ISOLATION_FOREST alert source); "
+    "high_source_fanout (cited events must carry HIGH_SOURCE_FANOUT context metadata); "
+    "horizontal_scan (cited events must carry HORIZONTAL_SCAN context metadata); "
+    "brute_force_flow_pattern (cited events must carry BRUTE_FORCE_PATTERN detector metadata); "
+    "multi_host_multi_service (the cited event set must contain at least two endpoint IPs "
+    "and two distinct protocol/destination-port combinations); "
+    "host_pivot_lead (cite only event IDs that are endpoints of an exact host_pivot graph edge). "
+    "Do NOT emit generic or invented types such as detection_signal, host_activity, "
+    "service_activity or correlated_events. If a tool result cannot be expressed by one "
+    "of these predicates, describe the evidence gap in the narrative instead of forcing a claim. "
+    "All findings are network-evidence leads, not proof of compromise."
+)
+
 
 def _semantic_tokens(value: Any) -> set[str]:
     """Normalize event metadata tokens, including CSV-serialized list values."""
@@ -2058,6 +2074,12 @@ class AgenticInvestigationAgent:
         llm_tool_rounds = 0
         llm_tool_requests = 0
         llm_tool_calls_executed = 0
+        model_preliminary_findings_proposed = 0
+        final_synthesis_completed = False
+        final_synthesis_contract_valid = False
+        final_synthesis_contract_error = None
+        finding_disposition = None
+        finding_disposition_reason = ""
         model_response: dict[str, Any] = {}
 
         if self.reasoner is not None:
@@ -2065,19 +2087,30 @@ class AgenticInvestigationAgent:
                 incident, timeline, graph, detections, claims
             )
 
-            def collect_model_finding_candidates(response: dict[str, Any]) -> None:
-                """Retain typed findings from every reasoning phase for validation."""
-                for field in ("preliminary_findings", "findings"):
-                    values = response.get(field, [])
-                    if not isinstance(values, list):
+            def collect_model_finding_candidates(
+                response: dict[str, Any],
+                *,
+                phase: str,
+            ) -> None:
+                """Count preliminary proposals, but validate only final-synthesis findings."""
+                nonlocal model_preliminary_findings_proposed
+                preliminary = response.get("preliminary_findings", [])
+                if isinstance(preliminary, list):
+                    model_preliminary_findings_proposed += sum(
+                        isinstance(item, dict) for item in preliminary
+                    )
+                if phase != "final_synthesis":
+                    return
+                values = response.get("findings", [])
+                if not isinstance(values, list):
+                    return
+                for finding in values:
+                    if not isinstance(finding, dict):
                         continue
-                    for finding in values:
-                        if not isinstance(finding, dict):
-                            continue
-                        key = json.dumps(finding, sort_keys=True, default=str)
-                        if key not in model_finding_candidate_keys:
-                            model_finding_candidate_keys.add(key)
-                            model_finding_candidates.append(dict(finding))
+                    key = json.dumps(finding, sort_keys=True, default=str)
+                    if key not in model_finding_candidate_keys:
+                        model_finding_candidate_keys.add(key)
+                        model_finding_candidates.append(dict(finding))
 
             def invoke_reasoner(
                 context: dict[str, Any],
@@ -2089,7 +2122,7 @@ class AgenticInvestigationAgent:
                 try:
                     response = self._decode_reasoner_response(self.reasoner(context))
                     requested = response.get("tool_calls", [])
-                    collect_model_finding_candidates(response)
+                    collect_model_finding_candidates(response, phase=phase)
                     preliminary = response.get("preliminary_findings", [])
                     findings = response.get("findings", [])
                     reasoner_calls.append({
@@ -2147,8 +2180,12 @@ class AgenticInvestigationAgent:
                         "incident-scoped read-only tools to inspect additional event details or graph "
                         "relationships before making claims that need them. Cite only event IDs listed "
                         "in incident.event_ids. Identify what remains unknown and do not assert compromise "
-                        "from flow metadata alone. Return JSON with tool_calls (max 5), "
-                        "preliminary_findings (each with claim_type, claim and event IDs) and narrative."
+                        "from flow metadata alone. "
+                        + _MODEL_CLAIM_TYPE_GUIDANCE
+                        + " Return JSON with tool_calls (max 5), "
+                        "preliminary_findings (each with an allowed claim_type, claim and exact event IDs) "
+                        "and a concise planning narrative. These are proposals only; final findings "
+                        "will be produced in a separate final_synthesis phase."
                     ),
                     "incident": reasoner_evidence["incident"],
                     "timeline": reasoner_evidence["timeline"],
@@ -2369,11 +2406,10 @@ class AgenticInvestigationAgent:
                         next_response = invoke_reasoner(
                             {
                                 "task": (
-                                    "Continue the SOC investigation using the initial evidence and all "
-                                    "completed tool results. Identify remaining evidence gaps. Request "
-                                    "only additional relevant allowlisted read-only tools; otherwise "
-                                    "return final JSON with tool_calls as an empty array, findings and "
-                                    "narrative. Each finding must identify one claim_type and cite only supporting events. Do not infer compromise from flow metadata alone."
+                                    "Review the initial evidence and completed tool results. "
+                                    "Request another batch of allowlisted read-only tools only if needed. "
+                                    "Otherwise return tool_calls as an empty array and a short evidence-gap note. "
+                                    "Do not produce final findings or a final narrative in this phase."
                                 ),
                                 "incident": reasoner_evidence["incident"],
                                 "initial_evidence": {
@@ -2397,15 +2433,24 @@ class AgenticInvestigationAgent:
                         model_response = next_response
                         continue
 
+                if reasoner_error is None:
                     final_response = invoke_reasoner(
                         {
                             "task": (
-                                "Provide the final SOC investigation synthesis using only the supplied "
-                                "incident evidence and completed tool results. No more tools are available. "
-                                "Return JSON with an empty tool_calls array, findings with exact event IDs, "
-                                "a concise narrative, uncertainty/caveats and recommended analyst actions. "
-                                "Do not invent users, process execution, successful logins, exfiltration "
-                                "or business impact. Each finding must identify one claim_type and cite only supporting events."
+                                "FINAL SYNTHESIS. The evidence-gathering phase is over and no more tools are available. "
+                                "Return one JSON object with tool_calls as an empty array, findings as an array "
+                                "(which may be empty only when no additional finding is supportable), "
+                                "finding_disposition, finding_disposition_reason and a concise narrative. "
+                                "Set finding_disposition to 'findings_proposed' when findings is non-empty. "
+                                "When findings is empty, set finding_disposition to "
+                                "'no_additional_findings_supported' and explain why in finding_disposition_reason. "
+                                + _MODEL_CLAIM_TYPE_GUIDANCE
+                                + " Every finding must include claim_type, claim, evidence_event_ids and confidence. "
+                                "Cite only exact event IDs from this incident. The validator will independently "
+                                "check each claim against event metadata or exact graph edges. "
+                                "A tool request in this final phase is invalid. Never infer successful login, "
+                                "credential compromise, lateral movement, process execution, exfiltration or "
+                                "business impact from flow metadata alone."
                             ),
                             "incident": reasoner_evidence["incident"],
                             "initial_evidence": {
@@ -2418,27 +2463,74 @@ class AgenticInvestigationAgent:
                             "response_contract": {
                                 "tool_calls": [],
                                 "findings": [{
-                                    "claim_type": "one supported claim type",
+                                    "claim_type": "one exact supported claim type",
                                     "claim": "string",
                                     "evidence_event_ids": ["event id"],
                                     "confidence": "low|medium|high",
                                 }],
+                                "finding_disposition": (
+                                    "findings_proposed|no_additional_findings_supported"
+                                ),
+                                "finding_disposition_reason": (
+                                    "required explanation when findings is empty"
+                                ),
                                 "narrative": "string",
                             },
                         },
                         phase="final_synthesis",
-                        round_number=round_number,
+                        round_number=llm_tool_rounds + 1,
                     )
                     if final_response is not None:
-                        if final_response.get("tool_calls"):
-                            reject_tool_request(
-                                "final_synthesis_tool_request",
-                                {},
-                                "Tool requests are disabled during final synthesis.",
-                            )
+                        final_synthesis_completed = True
                         model_response = final_response
-                    break
+                        raw_tools = final_response.get("tool_calls")
+                        raw_findings = final_response.get("findings")
+                        raw_narrative = final_response.get("narrative")
+                        finding_disposition = final_response.get("finding_disposition")
+                        raw_disposition_reason = final_response.get(
+                            "finding_disposition_reason", ""
+                        )
+                        finding_disposition_reason = (
+                            raw_disposition_reason.strip()
+                            if isinstance(raw_disposition_reason, str)
+                            else ""
+                        )
 
+                        if not isinstance(raw_tools, list) or raw_tools:
+                            final_synthesis_contract_error = (
+                                "Final synthesis must contain an empty tool_calls array."
+                            )
+                        elif not isinstance(raw_findings, list):
+                            final_synthesis_contract_error = (
+                                "Final synthesis must contain a findings array."
+                            )
+                        elif not isinstance(raw_narrative, str) or not raw_narrative.strip():
+                            final_synthesis_contract_error = (
+                                "Final synthesis must contain a non-empty narrative."
+                            )
+                        elif raw_findings and finding_disposition != "findings_proposed":
+                            final_synthesis_contract_error = (
+                                "Non-empty findings require finding_disposition='findings_proposed'."
+                            )
+                        elif not raw_findings and (
+                            finding_disposition != "no_additional_findings_supported"
+                            or len(finding_disposition_reason) < 12
+                        ):
+                            final_synthesis_contract_error = (
+                                "An empty findings array requires "
+                                "finding_disposition='no_additional_findings_supported' "
+                                "and a substantive finding_disposition_reason."
+                            )
+                        else:
+                            final_synthesis_contract_valid = True
+
+                        if not final_synthesis_contract_valid:
+                            trace.append({
+                                "tool": "validate_final_synthesis",
+                                "status": "rejected",
+                                "error": final_synthesis_contract_error,
+                                "evidence_refs": [],
+                            })
             event_lookup = {
                 str(event["event_id"]): event
                 for event in timeline
@@ -2480,10 +2572,54 @@ class AgenticInvestigationAgent:
 
         all_findings = claims + model_findings
         proposed_narrative = ""
-        if self.reasoner is not None and reasoner_error is None:
+        if self.reasoner is not None and final_synthesis_completed:
             raw_narrative = model_response.get("narrative", "")
             if isinstance(raw_narrative, str):
                 proposed_narrative = raw_narrative.strip()
+
+        model_findings_rejected = sum(
+            call.get("tool") == "validate_model_finding" for call in trace
+        )
+        model_findings_partially_accepted = sum(
+            call.get("tool") == "validate_model_finding_partial" for call in trace
+        )
+        if self.reasoner is None:
+            model_synthesis_status = "not_configured"
+        elif reasoner_error is not None:
+            model_synthesis_status = "reasoner_error"
+        elif not final_synthesis_completed:
+            model_synthesis_status = "final_synthesis_missing"
+        elif not final_synthesis_contract_valid:
+            model_synthesis_status = "invalid_final_synthesis_contract"
+        elif model_findings_rejected:
+            model_synthesis_status = "finding_validation_failed"
+        elif finding_disposition == "findings_proposed" and model_findings:
+            model_synthesis_status = "validated_findings"
+        elif (
+            finding_disposition == "no_additional_findings_supported"
+            and not model_finding_candidates
+        ):
+            model_synthesis_status = "validated_no_additional_findings"
+        else:
+            model_synthesis_status = "incomplete_findings_disposition"
+
+        model_synthesis_successful = model_synthesis_status in {
+            "validated_findings",
+            "validated_no_additional_findings",
+        }
+        reasoner_execution_status = (
+            "not_configured"
+            if self.reasoner is None
+            else "failed"
+            if reasoner_error is not None
+            else "succeeded"
+        )
+        investigation_status = (
+            "completed"
+            if self.reasoner is None or model_synthesis_successful
+            else "completed_with_fallback"
+        )
+
         return {
             "agent": "AgenticInvestigationAgent",
             "mode": (
@@ -2494,11 +2630,12 @@ class AgenticInvestigationAgent:
                 else "tool_assisted_llm"
             ),
             "reasoner_error": reasoner_error,
+            "reasoner_execution_status": reasoner_execution_status,
             "reasoner_calls": reasoner_calls,
             "llm_tool_rounds": llm_tool_rounds,
             "llm_tool_requests": llm_tool_requests,
             "llm_tool_calls_executed": llm_tool_calls_executed,
-            "status": "completed_with_fallback" if reasoner_error is not None else "completed",
+            "status": investigation_status,
             "plan": [
                 "retrieve_incident_context",
                 "inspect_chronological_event_timeline",
@@ -2514,15 +2651,20 @@ class AgenticInvestigationAgent:
             "model_narrative_status": (
                 "proposed_unverified" if proposed_narrative else "not_available"
             ),
+            "final_synthesis_completed": final_synthesis_completed,
+            "final_synthesis_contract_valid": final_synthesis_contract_valid,
+            "final_synthesis_contract_error": final_synthesis_contract_error,
+            "finding_disposition": finding_disposition,
+            "finding_disposition_reason": finding_disposition_reason,
+            "reasoner_execution_status": reasoner_execution_status,
+            "model_synthesis_status": model_synthesis_status,
+            "model_synthesis_successful": model_synthesis_successful,
             "analyst_validation_required": True,
+            "model_preliminary_findings_proposed": model_preliminary_findings_proposed,
             "model_findings_proposed": len(model_finding_candidates),
             "model_findings_accepted": len(model_findings),
-            "model_findings_rejected": sum(
-                call.get("tool") == "validate_model_finding" for call in trace
-            ),
-            "model_findings_partially_accepted": sum(
-                call.get("tool") == "validate_model_finding_partial" for call in trace
-            ),
+            "model_findings_rejected": model_findings_rejected,
+            "model_findings_partially_accepted": model_findings_partially_accepted,
             "attack_hypotheses": incident.get("attack_hypotheses", []),
             "recommended_actions": list(incident.get("recommended_actions", [])),
             "narrative": narrative,
@@ -2702,6 +2844,9 @@ def _write_report(incidents: list[dict[str, Any]], events: pd.DataFrame, graph: 
             f"- LLM-directed tool rounds: {investigation.get('llm_tool_rounds', 0)}",
             f"- LLM-directed tools executed: {investigation.get('llm_tool_calls_executed', 0)}",
             f"- Evidence-linked findings: {len(investigation.get('findings', []))}",
+            f"- Reasoner execution: {investigation.get('reasoner_execution_status', 'not recorded')}",
+            f"- LLM synthesis validation: {investigation.get('model_synthesis_status', 'not recorded')}",
+            f"- LLM findings accepted/rejected: {investigation.get('model_findings_accepted', 0)}/{investigation.get('model_findings_rejected', 0)}",
         ])
         if investigation.get("narrative"):
             lines.append(f"- Evidence-derived baseline: {investigation['narrative']}")
