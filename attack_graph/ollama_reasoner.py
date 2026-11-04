@@ -206,7 +206,7 @@ def reasoner(context: dict[str, Any]) -> dict[str, Any]:
     response_format: str | dict[str, Any] = "json"
     if is_final_synthesis:
         system_message += (
-            "\\nFINAL SYNTHESIS MODE: Return only the five fields required by the "
+            "\nFINAL SYNTHESIS MODE: Return only the five fields required by the "
             "provided schema. tool_calls must be an empty array. Do not copy, replay, "
             "or nest completed tool results in the response. Summarise evidence in "
             "findings and narrative only."
