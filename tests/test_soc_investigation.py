@@ -746,7 +746,7 @@ def test_reasoner_failure_falls_back_to_deterministic_investigation(tmp_path):
     run_soc_investigation(flows, tmp_path, reasoner=unavailable_reasoner)
     payload = json.loads((tmp_path / "incident_investigation.json").read_text())
     agent = payload["incidents"][0]["investigation_agent"]
-    assert agent["status"] == "completed"
+    assert agent["status"] == "completed_with_fallback"
     assert agent["mode"] == "tool_assisted_llm_fallback"
     assert "TimeoutError" in agent["reasoner_error"]
     assert agent["findings"]
