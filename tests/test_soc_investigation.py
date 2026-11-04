@@ -1300,3 +1300,86 @@ def test_agentic_findings_aggregate_repeated_host_pivot_edges():
     assert result["narrative"].startswith("Assessment:")
     assert "Next validation:" in result["narrative"]
 
+
+
+def test_reasoner_context_is_compacted_without_reducing_full_evidence_scope(tmp_path):
+    import json
+
+    flows = pd.DataFrame([
+        {
+            "timestamp": _time(0, second),
+            "src_ip": f"10.0.0.{second + 1}",
+            "dst_ip": "10.0.1.1",
+            "protocol": 6,
+            "src_port": 51000 + second,
+            "dst_port": 443,
+            "alert": True,
+            "detection_reasons": "ISOLATION_FOREST_ANOMALY",
+            "alert_sources": "ISOLATION_FOREST",
+            "anomaly_score": 0.01 + second / 1000,
+        }
+        for second in range(40)
+    ])
+    observed = {}
+
+    def fake_reasoner(context):
+        observed.update(context)
+        encoded = json.dumps(context, ensure_ascii=False, default=str)
+        assert len(encoded) < 35_000
+        assert len(context["incident"]["event_ids"]) == 40
+        assert context["incident"]["timeline_total_events"] == 40
+        assert len(context["timeline"]) == 24
+        assert context["graph"]["member_event_node_count"] == 40
+        assert len(context["graph"]["event_edges"]) <= 16
+        assert "flow_row_ids" not in context["timeline"][0]
+        assert (
+            context["detections"]["event_id_counts"]["reason_to_event_ids"][
+                "ISOLATION_FOREST_ANOMALY"
+            ] == 40
+        )
+        assert len(
+            context["detections"]["reason_to_event_ids"]["ISOLATION_FOREST_ANOMALY"]
+        ) <= 6
+        return {
+            "tool_calls": [],
+            "findings": [],
+            "narrative": "The compact evidence sample needs analyst validation.",
+        }
+
+    _, _, summary = run_soc_investigation(flows, tmp_path, reasoner=fake_reasoner)
+
+    assert summary["incident_count"] == 1
+    assert observed["incident"]["timeline_sampled_events"] == 24
+
+
+def test_reasoner_timeout_is_marked_as_fallback_not_llm_success(tmp_path):
+    flows = pd.DataFrame([
+        {
+            "timestamp": _time(0, second),
+            "src_ip": "10.0.0.1",
+            "dst_ip": "10.0.0.9",
+            "protocol": 6,
+            "src_port": 51000 + second,
+            "dst_port": 22,
+            "alert": True,
+            "detection_reasons": "BRUTE_FORCE_PATTERN",
+            "alert_sources": "BEHAVIOURAL_RULE",
+            "anomaly_score": 0.01,
+        }
+        for second in (0, 20)
+    ])
+
+    def timed_out_reasoner(context):
+        raise TimeoutError("synthetic model timeout")
+
+    run_soc_investigation(flows, tmp_path, reasoner=timed_out_reasoner)
+    payload = json.loads(
+        (tmp_path / "incident_investigation.json").read_text()
+    )
+    agent = payload["incidents"][0]["investigation_agent"]
+
+    assert agent["mode"] == "tool_assisted_llm_fallback"
+    assert agent["status"] == "completed_with_fallback"
+    assert agent["reasoner_error"] == "TimeoutError: synthetic model timeout"
+    assert agent["model_narrative_status"] == "not_available"
+    assert agent["findings"]
