@@ -317,7 +317,7 @@ def reasoner(context: dict[str, Any]) -> dict[str, Any]:
     response_format: str | dict[str, Any] = "json"
     if is_initial_plan:
         system_message += (
-            "\\nINITIAL PLAN MODE: Return only tool_calls, preliminary_findings, "
+            "\nINITIAL PLAN MODE: Return only tool_calls, preliminary_findings, "
             "and narrative. Do not repeat or reproduce the incident context, "
             "timeline, graph, detections, or evidence records. Request only "
             "allowlisted read-only tools. Preliminary findings are tentative "
@@ -326,7 +326,7 @@ def reasoner(context: dict[str, Any]) -> dict[str, Any]:
         response_format = INITIAL_PLAN_SCHEMA
     elif is_tool_followup:
         system_message += (
-            "\\nTOOL FOLLOW-UP MODE: Return only tool_calls and evidence_gap_note. "
+            "\nTOOL FOLLOW-UP MODE: Return only tool_calls and evidence_gap_note. "
             "Do not repeat supplied evidence or completed tool results. Request "
             "only allowlisted read-only tools, or return an empty tool_calls array "
             "when no further retrieval is needed."
