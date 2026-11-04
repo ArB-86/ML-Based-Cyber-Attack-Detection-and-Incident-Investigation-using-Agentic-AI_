@@ -1,3 +1,0 @@
-# Install the benchmark/runtime dependencies plus the SOC analyst UI.
--r requirements-benchmark.txt
-streamlit>=1.41,<2
