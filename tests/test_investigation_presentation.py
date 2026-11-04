@@ -77,7 +77,7 @@ def test_pivot_evidence_is_rendered_as_readable_flow_sequence():
     assert rows[0]["outgoing_destination"] == "203.0.113.5"
     assert rows[0]["gap_seconds"] == 60.0
     sentence = build_plain_language_sequence(rows[0])
-    assert "12 flow(s)" in sentence
+    assert "12 network flows" in sentence
     assert "not proof" in sentence
 
 
@@ -132,7 +132,7 @@ def test_ai_investigation_report_explains_incident_and_exact_graph_sequence(tmp_
     result = payload["incidents"][0]
     assert result["validated_findings"][0]["sequences"][0]["incoming_source"] == "10.0.0.1"
     assert result["validated_findings"][0]["sequences"][0]["outgoing_destination"] == "203.0.113.5"
-    assert "What happened?" not in report  # report headings are concise and numbered
+    assert "## 1. Executive explanation" in report
     assert "Repeated authentication-service traffic" in report
     assert "10.0.0.1 to 10.0.0.2" in report
     assert "successful remote login" in report
