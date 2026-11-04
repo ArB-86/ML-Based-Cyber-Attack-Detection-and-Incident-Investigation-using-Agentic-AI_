@@ -61,6 +61,82 @@ def test_reasoner_posts_context_and_decodes_json(monkeypatch):
     assert result["narrative"] == "Evidence requires analyst validation."
 
 
+def test_reasoner_uses_initial_plan_schema_instead_of_generic_json(monkeypatch):
+    captured = {}
+
+    def fake_request(url, payload=None, *, timeout=900):
+        captured["payload"] = payload
+        return {
+            "message": {
+                "content": json.dumps({
+                    "tool_calls": [],
+                    "preliminary_findings": [],
+                    "narrative": "The evidence requires scoped inspection.",
+                })
+            }
+        }
+
+    monkeypatch.setattr(ollama_reasoner, "_request_json", fake_request)
+    result = ollama_reasoner.reasoner({
+        "task": "INITIAL PLAN. Act as a SOC analyst.",
+        "incident": {"incident_id": "INC-1"},
+        "timeline": [],
+        "graph": {},
+        "detections": {},
+        "tool_catalog": [],
+    })
+
+    schema = captured["payload"]["format"]
+    assert isinstance(schema, dict)
+    assert schema["required"] == [
+        "tool_calls",
+        "preliminary_findings",
+        "narrative",
+    ]
+    assert schema["properties"]["tool_calls"]["maxItems"] == 5
+    tool_schema = schema["properties"]["tool_calls"]["items"]
+    assert tool_schema["properties"]["name"]["enum"] == [
+        "get_event",
+        "get_host_activity",
+        "get_service_activity",
+        "get_correlated_events",
+    ]
+    preliminary_schema = schema["properties"]["preliminary_findings"]["items"]
+    assert preliminary_schema["properties"]["claim_type"]["enum"] == (
+        ollama_reasoner.SUPPORTED_CLAIM_TYPES
+    )
+    assert result["narrative"] == "The evidence requires scoped inspection."
+
+
+def test_reasoner_uses_tool_followup_schema(monkeypatch):
+    captured = {}
+
+    def fake_request(url, payload=None, *, timeout=900):
+        captured["payload"] = payload
+        return {
+            "message": {
+                "content": json.dumps({
+                    "tool_calls": [],
+                    "evidence_gap_note": "No further read-only retrieval is required.",
+                })
+            }
+        }
+
+    monkeypatch.setattr(ollama_reasoner, "_request_json", fake_request)
+    result = ollama_reasoner.reasoner({
+        "task": "Review completed read-only tool results.",
+        "incident": {"incident_id": "INC-1"},
+        "completed_tool_results": [],
+        "round": 1,
+    })
+
+    schema = captured["payload"]["format"]
+    assert isinstance(schema, dict)
+    assert schema["required"] == ["tool_calls", "evidence_gap_note"]
+    assert schema["properties"]["tool_calls"]["maxItems"] == 5
+    assert result["evidence_gap_note"].startswith("No further")
+
+
 def test_reasoner_rejects_non_json_model_content(monkeypatch):
     monkeypatch.setattr(
         ollama_reasoner,
