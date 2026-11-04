@@ -21,6 +21,10 @@ def test_reasoner_posts_context_and_decodes_json(monkeypatch):
                 "content": json.dumps({
                     "tool_calls": [],
                     "findings": [],
+                    "finding_disposition": "no_additional_findings_supported",
+                    "finding_disposition_reason": (
+                        "No extra claim is supported by the supplied evidence."
+                    ),
                     "narrative": "Evidence requires analyst validation.",
                 })
             }
@@ -31,7 +35,16 @@ def test_reasoner_posts_context_and_decodes_json(monkeypatch):
 
     assert captured["url"] == "http://localhost:11434/api/chat"
     assert captured["payload"]["model"] == "qwen-test:latest"
-    assert captured["payload"]["format"] == "json"
+    schema = captured["payload"]["format"]
+    assert isinstance(schema, dict)
+    assert schema["properties"]["tool_calls"]["maxItems"] == 0
+    assert schema["required"] == [
+        "tool_calls",
+        "findings",
+        "finding_disposition",
+        "finding_disposition_reason",
+        "narrative",
+    ]
     assert captured["payload"]["stream"] is False
     assert captured["payload"]["options"]["num_ctx"] == 16384
     assert "INC-1" in captured["payload"]["messages"][1]["content"]
