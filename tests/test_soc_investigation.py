@@ -245,7 +245,9 @@ def test_llm_agent_selects_scoped_tools_and_rejects_unsupported_evidence(tmp_pat
                 "narrative": "Need to inspect pivot host B.",
             }
         return {
+            "tool_calls": [],
             "narrative": "Host B is a pivot lead; validate using endpoint telemetry.",
+            "finding_disposition": "findings_proposed",
             "findings": [
                 {
                     "claim_type": "host_pivot_lead",
@@ -265,8 +267,13 @@ def test_llm_agent_selects_scoped_tools_and_rejects_unsupported_evidence(tmp_pat
     payload = json.loads((tmp_path / "incident_investigation.json").read_text())
     agent = payload["incidents"][0]["investigation_agent"]
 
-    assert calls["count"] == 2
+    assert calls["count"] == 3
     assert agent["mode"] == "tool_assisted_llm"
+    assert agent["status"] == "completed_with_fallback"
+    assert agent["reasoner_execution_status"] == "succeeded"
+    assert agent["model_synthesis_status"] == "finding_validation_failed"
+    assert agent["final_synthesis_completed"] is True
+    assert agent["final_synthesis_contract_valid"] is True
     assert agent["model_findings_accepted"] == 1
     assert agent["model_findings_rejected"] == 1
     assert any(
@@ -373,6 +380,11 @@ def test_agent_investigation_limit_runs_one_llm_incident_and_marks_rest_skipped(
         return {
             "tool_calls": [],
             "findings": [],
+            "finding_disposition": "no_additional_findings_supported",
+            "finding_disposition_reason": (
+                "The evidence supports only the deterministic baseline; no additional "
+                "independent model claim can be established."
+            ),
             "narrative": "Single-incident smoke-test response.",
         }
 
@@ -395,7 +407,9 @@ def test_agent_investigation_limit_runs_one_llm_incident_and_marks_rest_skipped(
     assert summary["agent_investigations_executed"] == 1
     assert summary["agent_investigations_skipped"] == 1
     assert summary["reasoner_incidents"] == 1
-    assert len(reasoner_calls) == 1
+    assert len(reasoner_calls) == 2
+    assert summary["llm_syntheses_successful"] == 1
+    assert summary["reasoner_executions_successful"] == 1
     assert sum(agent["mode"] == "tool_assisted_llm" for agent in agents) == 1
     assert sum(agent["mode"] == "not_run_limit" for agent in agents) == 1
     assert sum(agent["status"] == "skipped_by_limit" for agent in agents) == 1
@@ -485,6 +499,7 @@ def test_llm_agent_supports_two_bounded_tool_rounds(tmp_path):
                 "evidence_event_ids": ["EVT-000001", "EVT-000002"],
                 "confidence": "high",
             }],
+            "finding_disposition": "findings_proposed",
         }
 
     run_soc_investigation(flows, tmp_path, reasoner=fake_reasoner)
@@ -521,7 +536,7 @@ def test_llm_agent_supports_two_bounded_tool_rounds(tmp_path):
     assert model_finding["analyst_validation_required"] is True
 
 
-def test_agent_retains_preliminary_findings_when_final_findings_are_empty(tmp_path):
+def test_agent_does_not_promote_preliminary_findings_without_final_validation(tmp_path):
     flows = pd.DataFrame([
         {
             "timestamp": _time(0), "src_ip": "A", "dst_ip": "B", "protocol": 6,
@@ -546,10 +561,15 @@ def test_agent_retains_preliminary_findings_when_final_findings_are_empty(tmp_pa
                 "evidence_event_ids": ["EVT-000001", "EVT-000002"],
                 "confidence": "high",
             }],
-            # A required but empty final findings array must not erase
-            # the already-produced preliminary finding.
+            # Preliminary findings are proposals only. An explicit final
+            # disposition is required before any claim can be accepted.
             "findings": [],
-            "narrative": "Two events carry Isolation Forest detector metadata.",
+            "finding_disposition": "no_additional_findings_supported",
+            "finding_disposition_reason": (
+                "The preliminary proposal is not retained because the final "
+                "evidence review did not establish a separately supportable claim."
+            ),
+            "narrative": "The detector metadata is retained in the deterministic evidence baseline.",
         }
 
     run_soc_investigation(flows, tmp_path, reasoner=fake_reasoner)
@@ -559,15 +579,16 @@ def test_agent_retains_preliminary_findings_when_final_findings_are_empty(tmp_pa
     agent = payload["incidents"][0]["investigation_agent"]
 
     assert agent["mode"] == "tool_assisted_llm"
-    assert agent["model_findings_proposed"] == 1
-    assert agent["model_findings_accepted"] == 1
-    finding = next(
-        item for item in agent["findings"]
-        if item["source"] == "llm_semantic_validated"
+    assert agent["status"] == "completed"
+    assert agent["model_synthesis_status"] == "validated_no_additional_findings"
+    assert agent["model_synthesis_successful"] is True
+    assert agent["model_preliminary_findings_proposed"] == 1
+    assert agent["model_findings_proposed"] == 0
+    assert agent["model_findings_accepted"] == 0
+    assert not any(
+        item["source"] == "llm_semantic_validated"
+        for item in agent["findings"]
     )
-    assert finding["claim_type"] == "isolation_forest_anomaly"
-    assert finding["validation_scope"] == "detector_metadata_predicate"
-    assert finding["claim_semantics_independently_verified"] is True
     assert agent["reasoner_calls"][0]["finding_counts"] == {
         "preliminary_findings": 1,
         "findings": 0,
@@ -1324,6 +1345,16 @@ def test_reasoner_context_is_compacted_without_reducing_full_evidence_scope(tmp_
 
     def fake_reasoner(context):
         observed.update(context)
+        if "timeline" not in context:
+            return {
+                "tool_calls": [],
+                "findings": [],
+                "finding_disposition": "no_additional_findings_supported",
+                "finding_disposition_reason": (
+                    "No additional claim is supportable without out-of-band telemetry."
+                ),
+                "narrative": "The compact evidence sample needs analyst validation.",
+            }
         encoded = json.dumps(context, ensure_ascii=False, default=str)
         assert len(encoded) < 25_000
         assert len(context["incident"]["event_ids"]) == 40
@@ -1381,5 +1412,8 @@ def test_reasoner_timeout_is_marked_as_fallback_not_llm_success(tmp_path):
     assert agent["mode"] == "tool_assisted_llm_fallback"
     assert agent["status"] == "completed_with_fallback"
     assert agent["reasoner_error"] == "TimeoutError: synthetic model timeout"
+    assert agent["reasoner_execution_status"] == "failed"
+    assert agent["model_synthesis_status"] == "reasoner_error"
+    assert agent["model_synthesis_successful"] is False
     assert agent["model_narrative_status"] == "not_available"
     assert agent["findings"]
