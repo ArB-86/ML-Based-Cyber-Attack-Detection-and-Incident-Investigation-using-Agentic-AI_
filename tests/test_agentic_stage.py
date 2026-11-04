@@ -49,18 +49,28 @@ def test_ai_only_stage_reuses_existing_events_graph_and_risk(tmp_path):
     def fake_reasoner(context):
         calls.append(context)
         assert context["incident"]["incident_id"] == "INC-00001"
+        if "timeline" not in context:
+            return {
+                "tool_calls": [],
+                "findings": [],
+                "finding_disposition": "no_additional_findings_supported",
+                "finding_disposition_reason": (
+                    "The network-flow evidence needs independent authentication and endpoint corroboration."
+                ),
+                "narrative": "Network-flow evidence needs independent analyst corroboration.",
+            }
         assert context["timeline"]
         assert context["graph"]["member_event_nodes"]
         assert context["detections"]["reason_to_event_ids"]
         return {
             "tool_calls": [],
-            "findings": [],
-            "narrative": "Network-flow evidence needs independent analyst corroboration.",
+            "preliminary_findings": [],
+            "narrative": "Initial evidence retrieved; final synthesis follows.",
         }
 
     result = run(tmp_path, reasoner=fake_reasoner, max_incidents=1)
 
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert result["upstream_stages_reexecuted"] is False
     assert result["processed_incident_count"] == 1
     assert result["reasoner_enabled"] is True
@@ -83,6 +93,9 @@ def test_ai_only_stage_reuses_existing_events_graph_and_risk(tmp_path):
         (tmp_path / "agentic_investigation_summary.json").read_text()
     )
     assert stage_summary["stage"] == "agentic_ai_investigation_only"
+    assert stage_summary["agent_reasoner_calls"] == 2
+    assert stage_summary["reasoner_executions_successful"] == 1
+    assert stage_summary["llm_syntheses_successful"] == 1
     manifest = json.loads((tmp_path / "soc_pipeline_manifest.json").read_text())
     assert manifest["agentic_investigation_stage"]["upstream_stages_reexecuted"] is False
 
@@ -154,19 +167,31 @@ def test_ai_only_summary_separates_current_run_from_preserved_dossier_counts(tmp
     nx.write_gexf(graph, graph_path)
 
     def fake_reasoner(context):
+        if "timeline" not in context:
+            return {
+                "tool_calls": [],
+                "findings": [],
+                "finding_disposition": "no_additional_findings_supported",
+                "finding_disposition_reason": (
+                    "The bounded network evidence does not support an additional claim."
+                ),
+                "narrative": "One incident was reviewed using bounded evidence.",
+            }
         return {
             "tool_calls": [],
-            "findings": [],
-            "narrative": "One incident was reviewed using bounded evidence.",
+            "preliminary_findings": [],
+            "narrative": "Initial evidence loaded for review.",
         }
 
     result = run(tmp_path, reasoner=fake_reasoner, max_incidents=1)
 
     assert result["processed_incident_count"] == 1
     assert result["counts_scope"] == "records_touched_by_this_run"
-    assert result["agent_reasoner_calls"] == 1
+    assert result["agent_reasoner_calls"] == 2
     assert result["agent_investigations_executed"] == 1
     assert result["agent_investigations_successful"] == 1
+    assert result["reasoner_executions_successful"] == 1
+    assert result["llm_syntheses_successful"] == 1
     assert result["preserved_preexisting_agent_records"] == 1
     assert result["dossier_counts"]["agent_investigations_executed"] == 2
 
