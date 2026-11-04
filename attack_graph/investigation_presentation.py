@@ -198,11 +198,15 @@ def build_plain_language_sequence(row: dict[str, Any]) -> str:
     pivot = row.get("pivot_host", "the host")
     gap = row.get("gap_seconds")
     gap_text = f"{gap:g} seconds" if isinstance(gap, (int, float)) else "an unrecorded interval"
+    incoming_count = row.get("incoming_flows", "an unknown number of")
+    outgoing_count = row.get("outgoing_flows", "an unknown number of")
+    incoming_word = "flow" if str(incoming_count) == "1" else "flows"
+    outgoing_word = "flow" if str(outgoing_count) == "1" else "flows"
     return (
-        f"Event {row.get('from_event_id')} records {row.get('incoming_flows')} flow(s) "
+        f"Event {row.get('from_event_id')} records {incoming_count} network {incoming_word} "
         f"from {row.get('incoming_source')} to {pivot} over {row.get('incoming_protocol')} "
         f"port(s) {row.get('incoming_ports')}. The graph links it to event "
-        f"{row.get('to_event_id')}, which records {row.get('outgoing_flows')} flow(s) "
+        f"{row.get('to_event_id')}, which records {outgoing_count} network {outgoing_word} "
         f"from {row.get('outgoing_source')} to {row.get('outgoing_destination')} over "
         f"{row.get('outgoing_protocol')} port(s) {row.get('outgoing_ports')}; the recorded "
         f"gap is {gap_text}. This is a connected network-flow sequence, not proof that "
