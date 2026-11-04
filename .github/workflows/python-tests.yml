@@ -23,7 +23,7 @@ jobs:
           python -m pip install -r requirements-benchmark.txt
           python -m pip install pytest
       - name: Compile modules
-        run: python -m compileall -q attack_graph tests
+        run: python -m compileall -q attack_graph tests streamlit_app.py
       - name: Run tests
         env:
           PYTHONPATH: .

@@ -314,3 +314,40 @@ requirements-benchmark.txt
 This is a CICIDS2017 benchmark research system, not a production-ready SOC deployment. The dataset contains labelled network flows, not independent identity, EDR, process, file-access, or application audit events. Behavioural thresholds are dataset-informed and need recalibration against representative organisational telemetry. Fixed time buckets can miss behaviour crossing a bucket boundary; a production streaming system should use stateful rolling windows. Detection quality, incident reconstruction quality, and LLM evidence quality should be evaluated separately.
 
 Do not report a priority score as compromise probability or treat a candidate incident as a confirmed breach. Preserve the data split and evaluation methodology when comparing experiments.
+
+## SOC analyst UI - AI investigation
+
+A focused Streamlit workbench is available for reading and running the Agentic AI
+investigation against the existing pipeline artefacts. It does not rerun data
+preprocessing, Isolation Forest, event construction, graph construction or risk
+assessment.
+
+Install the UI dependency in the project virtual environment:
+
+```powershell
+python -m pip install -r requirements-ui.txt
+```
+
+Start the workbench from the repository root:
+
+```powershell
+streamlit run streamlit_app.py
+```
+
+In the sidebar, select the pipeline output folder containing
+`attack_events.csv`, `attack_graph.gexf` and
+`incident_investigation.json`. Select an incident and use **Run / re-run AI
+investigation** to invoke Ollama for that exact incident. The UI shows:
+
+- a plain-language incident summary and explanations of detection signals;
+- only LLM findings that passed independent semantic/evidence validation;
+- readable inbound-to-pivot-to-outbound event sequences with timestamps, ports,
+  flow counts, graph gaps and event references;
+- investigation plan, read-only tool trace, confidence caveats and SOC next steps.
+
+The priority score is an analyst-workload heuristic, not a compromise
+probability. Network-flow evidence alone cannot confirm successful
+authentication, lateral movement or host compromise. The workbench therefore
+presents validated findings as investigation leads and keeps analyst
+corroboration visible.
+
