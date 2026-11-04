@@ -94,3 +94,47 @@ def test_incident_summary_uses_incident_and_graph_counts():
     assert result["flow_count"] == 24
     assert "2 correlated event(s)" in result["summary"]
     assert len(result["ai_findings"]) == 1
+
+
+
+def test_ai_investigation_report_explains_incident_and_exact_graph_sequence(tmp_path):
+    from attack_graph.investigation_presentation import write_agentic_investigation_outputs
+
+    incident = _incident()
+    incident["investigation_agent"].update({
+        "status": "completed",
+        "mode": "tool_assisted_llm",
+        "reasoner_execution_status": "succeeded",
+        "model_synthesis_status": "validated_findings",
+        "model_synthesis_successful": True,
+        "model_findings_proposed": 1,
+        "model_findings_accepted": 1,
+        "model_findings_rejected": 0,
+        "reasoner_calls": [{"phase": "plan"}, {"phase": "followup"}, {"phase": "final"}],
+        "llm_tool_requests": 2,
+        "llm_tool_calls_executed": 1,
+        "plan": ["retrieve_incident_context", "inspect_chronological_event_timeline"],
+        "tool_calls": [{
+            "tool": "get_correlated_events",
+            "status": "success",
+            "evidence_refs": ["EVT-1", "EVT-2"],
+        }],
+        "recommended_actions": ["Review authentication success/failure logs for the incident window."],
+    })
+    paths = write_agentic_investigation_outputs(str(tmp_path), [incident])
+
+    import json
+    payload = json.loads((tmp_path / "agentic_investigation_explanation.json").read_text(encoding="utf-8"))
+    report = (tmp_path / "agentic_investigation_report.md").read_text(encoding="utf-8")
+
+    assert paths["markdown"].endswith("agentic_investigation_report.md")
+    assert payload["incident_count"] == 1
+    result = payload["incidents"][0]
+    assert result["validated_findings"][0]["sequences"][0]["incoming_source"] == "10.0.0.1"
+    assert result["validated_findings"][0]["sequences"][0]["outgoing_destination"] == "203.0.113.5"
+    assert "What happened?" not in report  # report headings are concise and numbered
+    assert "Repeated authentication-service traffic" in report
+    assert "10.0.0.1 to 10.0.0.2" in report
+    assert "successful remote login" in report
+    assert "Review authentication success/failure logs" in report
+    assert "Reasoner phases: 3" in report
