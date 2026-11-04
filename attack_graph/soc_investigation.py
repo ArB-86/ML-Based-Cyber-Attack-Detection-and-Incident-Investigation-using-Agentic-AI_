@@ -1288,7 +1288,8 @@ _MODEL_CLAIM_TYPE_GUIDANCE = (
     "brute_force_flow_pattern (cited events must carry BRUTE_FORCE_PATTERN detector metadata); "
     "multi_host_multi_service (the cited event set must contain at least two endpoint IPs "
     "and two distinct protocol/destination-port combinations); "
-    "host_pivot_lead (cite only event IDs that are endpoints of an exact host_pivot graph edge). "
+    "host_pivot_lead (cite both event IDs from the same exact host_pivot graph edge; "
+    "never infer an edge from chronology, event-ID proximity or a shared host alone). "
     "Do NOT emit generic or invented types such as detection_signal, host_activity, "
     "service_activity or correlated_events. If a tool result cannot be expressed by one "
     "of these predicates, describe the evidence gap in the narrative instead of forcing a claim. "
@@ -1600,6 +1601,7 @@ class AgenticInvestigationAgent:
     REASONER_IDS_PER_SIGNAL = 4
     REASONER_FINDING_EDGE_SAMPLE = 2
     REASONER_TOOL_RECORD_SAMPLE = 8
+    REASONER_FINAL_HOST_PIVOT_EDGE_SAMPLE = 48
 
     @staticmethod
     def _sample_reasoner_items(items: Any, limit: int) -> list[Any]:
@@ -1615,6 +1617,59 @@ class AgenticInvestigationAgent:
             for position in range(limit)
         })
         return [values[index] for index in indices]
+
+    @classmethod
+    def _compact_reasoner_evidence_constraints(
+        cls,
+        graph: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Expose exact host-pivot pairs to prevent chronology-based edge guessing."""
+        raw_edges = graph.get("event_edges", [])
+        raw_edges = raw_edges if isinstance(raw_edges, list) else []
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        for edge in raw_edges:
+            if not isinstance(edge, dict):
+                continue
+            relation_tokens = _semantic_tokens(
+                str(edge.get("relation", "")).replace("|", ";")
+            )
+            if "HOST_PIVOT" not in relation_tokens:
+                continue
+            source_id = str(
+                edge.get("from", edge.get("from_event", ""))
+            ).removeprefix("event:")
+            target_id = str(
+                edge.get("to", edge.get("to_event", ""))
+            ).removeprefix("event:")
+            pivot_host = str(edge.get("pivot_host") or "").strip()
+            if not source_id or not target_id:
+                continue
+            key = (source_id, target_id, pivot_host)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append({
+                "from_event": source_id,
+                "to_event": target_id,
+                "pivot_host": pivot_host or None,
+                "gap_seconds": edge.get("gap_seconds"),
+            })
+
+        candidates.sort(key=lambda item: (
+            str(item.get("pivot_host") or ""),
+            str(item["from_event"]),
+            str(item["to_event"]),
+        ))
+        selected = cls._sample_reasoner_items(
+            candidates, cls.REASONER_FINAL_HOST_PIVOT_EDGE_SAMPLE
+        )
+        return {
+            "exact_host_pivot_edges": selected,
+            "host_pivot_edge_count": len(candidates),
+            "host_pivot_edges_sampled": len(candidates) > len(selected),
+        }
 
     @staticmethod
     def _compact_reasoner_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -1847,6 +1902,7 @@ class AgenticInvestigationAgent:
             "graph": compact_graph,
             "detections": compact_detections,
             "deterministic_findings": compact_findings,
+            "evidence_constraints": cls._compact_reasoner_evidence_constraints(graph),
         }
 
     @classmethod
@@ -2191,6 +2247,7 @@ class AgenticInvestigationAgent:
                     "timeline": reasoner_evidence["timeline"],
                     "graph": reasoner_evidence["graph"],
                     "detections": reasoner_evidence["detections"],
+                    "evidence_constraints": reasoner_evidence["evidence_constraints"],
                     "deterministic_findings": reasoner_evidence["deterministic_findings"],
                     "tool_catalog": self.TOOL_CATALOG,
                     "response_contract": {
@@ -2228,6 +2285,7 @@ class AgenticInvestigationAgent:
                     "get_correlated_events": set(),
                 }
                 all_tool_results: list[dict[str, Any]] = []
+                executed_tool_request_keys: set[str] = set()
 
                 for round_number in range(1, self.MAX_LLM_TOOL_ROUNDS + 1):
                     requested_tools = model_response.get("tool_calls", [])
@@ -2379,10 +2437,29 @@ class AgenticInvestigationAgent:
                         # Never trust an incident ID supplied by the model.
                         if name != "get_event":
                             arguments["incident_id"] = incident_id
+
+                        request_key = json.dumps(
+                            {"tool": name, "arguments": arguments},
+                            sort_keys=True,
+                            default=str,
+                        )
+                        if request_key in executed_tool_request_keys:
+                            trace.append({
+                                "tool": name,
+                                "arguments": arguments,
+                                "status": "skipped",
+                                "error": (
+                                    "Identical read-only tool request was already executed "
+                                    "in an earlier LLM round; reuse its completed result."
+                                ),
+                                "evidence_refs": [],
+                            })
+                            continue
                         result = self._record_call(
                             trace, name, arguments, self.available_tools[name]
                         )
                         if result is not None:
+                            executed_tool_request_keys.add(request_key)
                             llm_tool_calls_executed += 1
                             round_results.append({
                                 "tool": name,
@@ -2410,6 +2487,9 @@ class AgenticInvestigationAgent:
                                     "Review the initial evidence and completed tool results. "
                                     "Request another batch of allowlisted read-only tools only if needed. "
                                     "Otherwise return tool_calls as an empty array and a short evidence-gap note. "
+                                    "Do not repeat an identical tool name and argument set already present in "
+                                    "completed_tool_results. Use evidence_constraints.exact_host_pivot_edges "
+                                    "to cite exact pivot pairs; do not infer graph edges. "
                                     "Do not produce final findings or a final narrative in this phase."
                                 ),
                                 "incident": reasoner_evidence["incident"],
@@ -2421,6 +2501,7 @@ class AgenticInvestigationAgent:
                                 "deterministic_findings": reasoner_evidence["deterministic_findings"],
                                 "tool_catalog": self.TOOL_CATALOG,
                                 "completed_tool_results": all_tool_results,
+                                "evidence_constraints": reasoner_evidence["evidence_constraints"],
                                 "round": round_number,
                                 "remaining_tool_call_budget": (
                                     self.MAX_LLM_TOOL_CALLS - llm_tool_requests
@@ -2448,8 +2529,11 @@ class AgenticInvestigationAgent:
                                 + _MODEL_CLAIM_TYPE_GUIDANCE
                                 + " Every finding must include claim_type, claim, evidence_event_ids and confidence. "
                                 "Choose claim_type from allowed_claim_types exactly; never copy example or placeholder text. "
-                                "Cite only exact event IDs from this incident. The validator will independently "
-                                "check each claim against event metadata or exact graph edges. "
+                                "Cite only exact event IDs from this incident. For host_pivot_lead, cite both "
+                                "event IDs from the same pair in evidence_constraints.exact_host_pivot_edges. "
+                                "Do not infer a pivot edge from event-ID adjacency, chronology, shared hosts, "
+                                "or timeline order; if no listed pair supports the claim, omit it. "
+                                "The validator independently checks each claim against the full graph. "
                                 "A tool request in this final phase is invalid. Never infer successful login, "
                                 "credential compromise, lateral movement, process execution, exfiltration or "
                                 "business impact from flow metadata alone."
@@ -2462,6 +2546,7 @@ class AgenticInvestigationAgent:
                             },
                             "deterministic_findings": reasoner_evidence["deterministic_findings"],
                             "completed_tool_results": all_tool_results,
+                            "evidence_constraints": reasoner_evidence["evidence_constraints"],
                             "response_contract": {
                                 "tool_calls": [],
                                 "findings": [{
@@ -2565,6 +2650,10 @@ class AgenticInvestigationAgent:
                         trace.append({
                             "tool": "validate_model_finding",
                             "status": "rejected",
+                            "claim_type": finding.get("claim_type"),
+                            "claim": str(
+                                finding.get("claim", finding.get("finding", ""))
+                            )[:420],
                             "error": error or "Semantic validation failed.",
                             "evidence_refs": (
                                 raw_refs if isinstance(raw_refs, list)
