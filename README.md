@@ -105,7 +105,7 @@ $env:OLLAMA_TIMEOUT_SECONDS = "900"
 python -m attack_graph.ollama_reasoner --check
 ```
 
-The investigator keeps the full event, graph and detector evidence locally for validation, but sends a bounded sample to Qwen: up to 24 timeline events, 16 graph relationships, and capped event-ID examples per signal. The read-only tools can retrieve additional incident-scoped details when the model requests them. The default context allocation is `8192` tokens and the default output budget is `2048` tokens. Override these only after checking the size of the model-facing prompt and the memory available on your machine. A reasoner timeout is recorded as `completed_with_fallback`, not as a successful LLM synthesis.
+The investigator keeps the full event, graph and detector evidence locally for validation, but sends a bounded sample to Qwen: up to 16 timeline events, 12 graph relationships, and capped event-ID examples per signal. The read-only tools can retrieve additional incident-scoped details when the model requests them. The default context allocation is `8192` tokens and the default output budget is `2048` tokens. Override these only after checking the size of the model-facing prompt and the memory available on your machine. A reasoner timeout is recorded as `completed_with_fallback`, not as a successful LLM synthesis.
 
 Ollama API references: [Chat API](https://docs.ollama.com/api/chat) and [Qwen2.5 model library](https://ollama.com/library/qwen2.5).
 
