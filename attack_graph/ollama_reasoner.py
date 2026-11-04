@@ -46,14 +46,16 @@ FINAL_SYNTHESIS_SCHEMA = {
         },
         "findings": {
             "type": "array",
+            "maxItems": 3,
             "items": {
                 "type": "object",
                 "properties": {
-                    "claim_type": {"type": "string"},
-                    "claim": {"type": "string"},
+                    "claim_type": {"type": "string", "maxLength": 48},
+                    "claim": {"type": "string", "maxLength": 420},
                     "evidence_event_ids": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "maxItems": 8,
+                        "items": {"type": "string", "maxLength": 32},
                     },
                     "confidence": {
                         "type": "string",
@@ -76,8 +78,8 @@ FINAL_SYNTHESIS_SCHEMA = {
                 "no_additional_findings_supported",
             ],
         },
-        "finding_disposition_reason": {"type": "string"},
-        "narrative": {"type": "string"},
+        "finding_disposition_reason": {"type": "string", "maxLength": 400},
+        "narrative": {"type": "string", "maxLength": 900},
     },
     "required": [
         "tool_calls",
@@ -205,11 +207,17 @@ def reasoner(context: dict[str, Any]) -> dict[str, Any]:
     system_message = SYSTEM_PROMPT
     response_format: str | dict[str, Any] = "json"
     if is_final_synthesis:
+        num_predict = _env_int(
+            "OLLAMA_FINAL_NUM_PREDICT",
+            max(num_predict, 3072),
+        )
         system_message += (
             "\nFINAL SYNTHESIS MODE: Return only the five fields required by the "
-            "provided schema. tool_calls must be an empty array. Do not copy, replay, "
-            "or nest completed tool results in the response. Summarise evidence in "
-            "findings and narrative only."
+            "provided schema. tool_calls must be an empty array. Propose at most "
+            "three concise, non-duplicative findings. Each claim must be one or two "
+            "sentences and cite no more than eight event IDs. Keep the narrative to "
+            "three short sentences. Do not copy, replay, or nest completed tool "
+            "results. Summarise evidence in findings and narrative only."
         )
         response_format = FINAL_SYNTHESIS_SCHEMA
 
