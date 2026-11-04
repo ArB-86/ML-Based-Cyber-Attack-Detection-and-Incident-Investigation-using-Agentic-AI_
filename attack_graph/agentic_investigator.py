@@ -207,6 +207,17 @@ def _stage_counts(incidents: list[dict[str, Any]]) -> dict[str, int]:
         "agent_investigations_with_fallback": sum(
             item.get("status") == "completed_with_fallback" for item in agents
         ),
+        "reasoner_executions_successful": sum(
+            item.get("reasoner_execution_status") == "succeeded" for item in agents
+        ),
+        "llm_syntheses_successful": sum(
+            item.get("model_synthesis_successful") is True for item in agents
+        ),
+        "llm_syntheses_incomplete": sum(
+            item.get("reasoner_execution_status") == "succeeded"
+            and item.get("model_synthesis_successful") is not True
+            for item in agents
+        ),
         "agent_investigations_skipped": sum(
             item.get("status") == "skipped_by_limit" for item in agents
         ),
