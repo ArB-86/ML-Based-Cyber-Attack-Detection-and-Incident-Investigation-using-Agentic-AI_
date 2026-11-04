@@ -2455,12 +2455,11 @@ class AgenticInvestigationAgent:
                                 "evidence_refs": [],
                             })
                             continue
-                        executed_tool_request_keys.add(request_key)
-
                         result = self._record_call(
                             trace, name, arguments, self.available_tools[name]
                         )
                         if result is not None:
+                            executed_tool_request_keys.add(request_key)
                             llm_tool_calls_executed += 1
                             round_results.append({
                                 "tool": name,
