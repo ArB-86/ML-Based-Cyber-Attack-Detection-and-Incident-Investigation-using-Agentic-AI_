@@ -285,3 +285,239 @@ def readable_tool_trace(investigation: dict[str, Any]) -> list[dict[str, Any]]:
             "Evidence references": ", ".join(_as_list(call.get("evidence_refs"))[:8]) or "Not recorded",
         })
     return rows
+
+
+def build_finding_explanation(
+    finding: dict[str, Any], event_lookup: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """Return a UI-neutral, analyst-readable representation of one validated claim."""
+    sequences = build_pivot_sequences(finding, event_lookup)
+    return {
+        "title": (
+            f"Potential pivot host: {sequences[0]['pivot_host']}"
+            if sequences else str(finding.get("claim_type") or "Validated investigation finding").replace("_", " ").title()
+        ),
+        "claim": str(finding.get("claim", "")),
+        "confidence": str(finding.get("confidence", "unknown")),
+        "evidence_event_ids": [_event_id(value) for value in _as_list(finding.get("evidence_event_ids"))],
+        "excluded_event_ids": [_event_id(value) for value in _as_list(finding.get("excluded_event_ids"))],
+        "sequences": [
+            {**row, "plain_language_explanation": build_plain_language_sequence(row)}
+            for row in sequences
+        ],
+        "interpretation": (
+            "The graph shows a directed relationship between two network-flow events involving this host. "
+            "This is a lead for further investigation, not proof of a successful remote login, lateral movement or compromise."
+        ),
+    }
+
+
+def build_agentic_incident_output(incident: dict[str, Any]) -> dict[str, Any]:
+    """Build the complete, UI-neutral AI investigation result for one incident."""
+    investigation = incident.get("investigation_agent") or {}
+    base = build_incident_explanation(incident)
+    event_lookup = _event_map(incident)
+    findings = [
+        build_finding_explanation(item, event_lookup)
+        for item in validated_ai_findings(incident)
+    ]
+    steps = investigation_steps(investigation)
+    trace = readable_tool_trace(investigation)
+    actions = _as_list(incident.get("recommended_actions")) or _as_list(
+        investigation.get("recommended_actions")
+    )
+    return {
+        "incident_id": str(incident.get("incident_id", "")),
+        "incident_title": str(incident.get("title", "Security incident")),
+        "status": str(investigation.get("status", "not_run")),
+        "mode": str(investigation.get("mode", "not_run")),
+        "reasoner_execution_status": investigation.get("reasoner_execution_status"),
+        "model_synthesis_status": investigation.get("model_synthesis_status"),
+        "model_synthesis_successful": investigation.get("model_synthesis_successful") is True,
+        "reasoner_calls": _as_list(investigation.get("reasoner_calls")),
+        "llm_tool_requests": int(investigation.get("llm_tool_requests", 0) or 0),
+        "llm_tool_calls_executed": int(investigation.get("llm_tool_calls_executed", 0) or 0),
+        "observed_window": {
+            "start_utc": format_timestamp(incident.get("start_time")),
+            "end_utc": format_timestamp(incident.get("end_time")),
+        },
+        "incident_overview": base,
+        "what_happened": base["summary"],
+        "detection_explanations": base["detections"],
+        "investigation_steps": steps,
+        "tool_trace": trace,
+        "validated_findings": findings,
+        "finding_counts": {
+            "proposed": int(investigation.get("model_findings_proposed", 0) or 0),
+            "accepted": int(investigation.get("model_findings_accepted", 0) or 0),
+            "rejected": int(investigation.get("model_findings_rejected", 0) or 0),
+        },
+        "analyst_next_steps": [str(item) for item in actions],
+        "not_established": [
+            "Successful authentication or login",
+            "Credential compromise",
+            "Remote process execution or lateral movement",
+            "Endpoint compromise, data access or exfiltration",
+        ],
+        "model_narrative_unverified": (
+            str(investigation.get("model_narrative"))
+            if investigation.get("model_narrative") else None
+        ),
+        "limitations": (
+            "The input contains network-flow telemetry. Findings are investigation leads and require "
+            "corroboration using identity/authentication, firewall, DNS, application and EDR telemetry."
+        ),
+    }
+
+
+def render_agentic_incident_markdown(result: dict[str, Any]) -> str:
+    """Render the analyst-facing AI output as Markdown; no UI framework required."""
+    overview = result["incident_overview"]
+    lines = [
+        f"# AI Investigation Result — {result['incident_id']}",
+        "",
+        f"**Incident:** {result['incident_title']}  ",
+        f"**Status:** {result['status']}  ",
+        f"**Investigation mode:** {result['mode']}  ",
+        f"**Observed window:** {result['observed_window']['start_utc']} to {result['observed_window']['end_utc']}",
+        "",
+        "## 1. Executive explanation",
+        "",
+        result["what_happened"],
+        "",
+        f"**Priority:** {overview['severity']}  ",
+        f"**Triage score:** {overview['priority_score']}/100 (analyst-priority heuristic, not compromise probability)  ",
+        f"**Triage confidence:** {overview['confidence']} — {overview['confidence_basis']}",
+        "",
+        "## 2. Why the incident was raised",
+        "",
+    ]
+    for category, cards in result["detection_explanations"].items():
+        if not cards:
+            continue
+        lines.extend([f"### {category}", ""])
+        for card in cards:
+            lines.append(f"- **{card['label']}** ({card['code']}): {card['explanation']}")
+        lines.append("")
+    lines.extend(["## 3. What the AI investigator did", ""])
+    for index, step in enumerate(result["investigation_steps"], start=1):
+        lines.append(f"{index}. {step['step']}")
+    lines.extend(["", "### Evidence tools used", ""])
+    if result["tool_trace"]:
+        lines.extend([
+            "| Analyst-readable action | Result | Evidence references |",
+            "|---|---|---|",
+        ])
+        for row in result["tool_trace"]:
+            lines.append(
+                f"| {row['Action']} | {row['Status']} | {row['Evidence references']} |"
+            )
+    else:
+        lines.append("No tool-call trace was recorded.")
+    lines.extend(["", "## 4. What the AI found", ""])
+    findings = result["validated_findings"]
+    if not findings:
+        lines.append(
+            "No model-generated finding passed independent validation. This is not proof that the incident is benign."
+        )
+    for index, finding in enumerate(findings, start=1):
+        lines.extend([
+            f"### Finding {index}: {finding['title']}",
+            "",
+            f"**Confidence:** {finding['confidence'].title()}  ",
+            f"**AI conclusion:** {finding['claim']}",
+            "",
+            "**What the underlying network records show:**",
+            "",
+        ])
+        if finding["sequences"]:
+            for sequence_index, sequence in enumerate(finding["sequences"], start=1):
+                lines.extend([
+                    f"{sequence_index}. {sequence['plain_language_explanation']}",
+                    f"   - Supporting events: {sequence['from_event_id']} → {sequence['to_event_id']}.",
+                ])
+        else:
+            lines.append(
+                "The stored finding did not include a graph-edge sequence to expand. "
+                f"Evidence events: {', '.join(finding['evidence_event_ids']) or 'not recorded'}."
+            )
+        lines.extend([
+            "",
+            f"**Evidence event IDs:** {', '.join(finding['evidence_event_ids']) or 'Not recorded'}",
+        ])
+        if finding["excluded_event_ids"]:
+            lines.append(
+                f"**References excluded by validation:** {', '.join(finding['excluded_event_ids'])}"
+            )
+        lines.extend(["", f"**Interpretation:** {finding['interpretation']}", ""])
+    lines.extend(["## 5. What the SOC analyst should do next", ""])
+    if result["analyst_next_steps"]:
+        lines.extend(
+            f"{index}. {action}"
+            for index, action in enumerate(result["analyst_next_steps"], start=1)
+        )
+    else:
+        lines.append("Review the event evidence and corroborate it using independent telemetry.")
+    lines.extend([
+        "",
+        "## 6. What this investigation does not prove",
+        "",
+        "The available network-flow records do not establish:",
+        "",
+    ])
+    lines.extend(f"- {item}" for item in result["not_established"])
+    lines.extend([
+        "",
+        f"> **Evidence boundary:** {result['limitations']}",
+        "",
+        "## 7. AI execution and validation",
+        "",
+        f"- Reasoner phases: {len(result['reasoner_calls'])}",
+        f"- Reasoner execution: {result['reasoner_execution_status'] or 'Not recorded'}",
+        f"- Model synthesis: {result['model_synthesis_status'] or 'Not recorded'}",
+        f"- Findings proposed / accepted / rejected: {result['finding_counts']['proposed']} / {result['finding_counts']['accepted']} / {result['finding_counts']['rejected']}",
+        f"- LLM tool requests / executed: {result['llm_tool_requests']} / {result['llm_tool_calls_executed']}",
+        "",
+        "Only independently validated findings are shown in Section 4.",
+        "",
+    ])
+    if result["model_narrative_unverified"]:
+        lines.extend([
+            "## Appendix: Model narrative",
+            "",
+            "> This is the model's narrative context. Validated conclusions are listed separately above.",
+            "",
+            str(result["model_narrative_unverified"]).replace("\n", "\n> "),
+            "",
+        ])
+    return "\n".join(lines)
+
+
+def write_agentic_investigation_outputs(
+    output_dir: str, incidents: list[dict[str, Any]]
+) -> dict[str, str]:
+    """Write UI-neutral, selected-incident Markdown and JSON outputs."""
+    import json
+    from pathlib import Path
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    results = [build_agentic_incident_output(item) for item in incidents]
+    payload = {
+        "schema_version": "1.0",
+        "stage": "agentic_ai_investigation",
+        "incident_count": len(results),
+        "incidents": results,
+    }
+    json_path = output_path / "agentic_investigation_explanation.json"
+    markdown_path = output_path / "agentic_investigation_report.md"
+    json_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False, default=str) + "\n",
+        encoding="utf-8",
+    )
+    reports = [render_agentic_incident_markdown(item) for item in results]
+    markdown_path.write_text(
+        "\n\n---\n\n".join(reports) + ("\n" if reports else ""),
+        encoding="utf-8",
+    )
+    return {"json": str(json_path), "markdown": str(markdown_path)}
