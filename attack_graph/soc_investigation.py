@@ -2199,11 +2199,12 @@ class AgenticInvestigationAgent:
                             "arguments": {},
                         }],
                         "preliminary_findings": [{
-                            "claim_type": "one supported claim type",
-                            "claim": "string",
-                            "evidence_event_ids": ["event id"],
+                            "claim_type": "host_pivot_lead",
+                            "claim": "Concise evidence-linked claim.",
+                            "evidence_event_ids": ["exact event id"],
                             "confidence": "low|medium|high",
                         }],
+                        "allowed_claim_types": sorted(_SUPPORTED_MODEL_CLAIM_TYPES),
                         "narrative": "string",
                     },
                 },
@@ -2446,6 +2447,7 @@ class AgenticInvestigationAgent:
                                 "'no_additional_findings_supported' and explain why in finding_disposition_reason. "
                                 + _MODEL_CLAIM_TYPE_GUIDANCE
                                 + " Every finding must include claim_type, claim, evidence_event_ids and confidence. "
+                                "Choose claim_type from allowed_claim_types exactly; never copy example or placeholder text. "
                                 "Cite only exact event IDs from this incident. The validator will independently "
                                 "check each claim against event metadata or exact graph edges. "
                                 "A tool request in this final phase is invalid. Never infer successful login, "
@@ -2463,11 +2465,12 @@ class AgenticInvestigationAgent:
                             "response_contract": {
                                 "tool_calls": [],
                                 "findings": [{
-                                    "claim_type": "one exact supported claim type",
-                                    "claim": "string",
-                                    "evidence_event_ids": ["event id"],
+                                    "claim_type": "host_pivot_lead",
+                                    "claim": "Concise evidence-linked claim.",
+                                    "evidence_event_ids": ["exact event id"],
                                     "confidence": "low|medium|high",
                                 }],
+                                "allowed_claim_types": sorted(_SUPPORTED_MODEL_CLAIM_TYPES),
                                 "finding_disposition": (
                                     "findings_proposed|no_additional_findings_supported"
                                 ),
