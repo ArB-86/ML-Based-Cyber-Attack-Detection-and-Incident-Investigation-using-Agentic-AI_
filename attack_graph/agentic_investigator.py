@@ -198,7 +198,14 @@ def _stage_counts(incidents: list[dict[str, Any]]) -> dict[str, int]:
             for item in agents
         ),
         "agent_investigations_executed": sum(
+            item.get("status") in {"completed", "completed_with_fallback"}
+            for item in agents
+        ),
+        "agent_investigations_successful": sum(
             item.get("status") == "completed" for item in agents
+        ),
+        "agent_investigations_with_fallback": sum(
+            item.get("status") == "completed_with_fallback" for item in agents
         ),
         "agent_investigations_skipped": sum(
             item.get("status") == "skipped_by_limit" for item in agents
@@ -233,6 +240,7 @@ def run(
     selected = ordered if max_incidents is None else ordered[:max_incidents]
     selected_ids = {str(item["incident_id"]) for item in selected}
     processed: list[dict[str, Any]] = []
+    touched_this_run: list[dict[str, Any]] = []
 
     for incident in ordered:
         incident_id = str(incident["incident_id"])
@@ -262,11 +270,13 @@ def run(
                         "risk-assessment evidence were preserved."
                     ),
                 }
+                touched_this_run.append(incident)
             continue
 
         investigation = agent.investigate(incident_id)
         incident["investigation_agent"] = investigation
         _update_recommendations(incident, investigation)
+        touched_this_run.append(incident)
         processed.append({
             "incident_id": incident_id,
             "status": investigation.get("status"),
@@ -283,9 +293,15 @@ def run(
         out / "incident_investigation_report.md",
     )
 
-    counts = _stage_counts(incidents)
+    # Distinguish work performed in this invocation from pre-existing records
+    # retained in the full dossier. Legacy runs may already contain thousands
+    # of deterministic investigation records before the AI-only stage starts.
+    counts = _stage_counts(touched_this_run)
+    dossier_counts = _stage_counts(incidents)
     summary = {
         "stage": "agentic_ai_investigation_only",
+        "counts_scope": "records_touched_by_this_run",
+        "preserved_preexisting_agent_records": max(0, len(incidents) - len(touched_this_run)),
         "upstream_stages_reexecuted": False,
         "reasoner_enabled": reasoner is not None,
         "reasoner_model": (
@@ -295,6 +311,7 @@ def run(
         "processed_incident_count": len(processed),
         "processed_incidents": processed,
         **counts,
+        "dossier_counts": dossier_counts,
         "outputs": [
             "incident_investigation.json",
             "incident_investigation_report.md",
