@@ -2095,7 +2095,7 @@ class AgenticInvestigationAgent:
                 """Count preliminary proposals, but validate only final-synthesis findings."""
                 nonlocal model_preliminary_findings_proposed
                 preliminary = response.get("preliminary_findings", [])
-                if isinstance(preliminary, list):
+                if phase != "final_synthesis" and isinstance(preliminary, list):
                     model_preliminary_findings_proposed += sum(
                         isinstance(item, dict) for item in preliminary
                     )
