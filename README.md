@@ -216,12 +216,26 @@ python -m attack_graph.agentic_investigator .\outputs\run_001 --deterministic
 
 The AI-only stage updates incident_investigation.json and
 incident_investigation_report.md, and writes
-agentic_investigation_summary.json. It also refreshes the agentic counts in
-soc_pipeline_manifest.json and pipeline_summary.json when those files
-exist. It does **not** rerun preprocessing, Isolation Forest, event
-aggregation, event correlation, incident formation, attack-graph construction
-or risk assessment. It does not modify attack_events.csv or
-attack_graph.gexf.
+agentic_investigation_summary.json plus two dedicated, UI-neutral AI outputs:
+
+- `agentic_investigation_report.md`: human-readable incident explanation,
+  detector-signal meaning, investigation steps, readable evidence-tool trace,
+  validated findings expanded into inbound-to-pivot-to-outbound network-flow
+  sequences, analyst next steps, and explicit evidence limitations.
+- `agentic_investigation_explanation.json`: structured equivalent intended
+  for downstream consumers, including a future UI, without requiring them to
+  parse prose or raw model output.
+
+Only findings that pass the independent semantic/evidence validator appear in
+the validated findings section. The files distinguish primary detector
+reasons from review-only and context-only signals. Network-flow relationships
+remain investigation leads, not proof of authentication success or compromise.
+
+The stage also refreshes agentic counts in `soc_pipeline_manifest.json` and
+`pipeline_summary.json` when those files exist. It does **not** rerun
+preprocessing, Isolation Forest, event aggregation, event correlation,
+incident formation, attack-graph construction or risk assessment. It does not
+modify `attack_events.csv` or `attack_graph.gexf`.
 
 ## 6. What the pipeline does
 
