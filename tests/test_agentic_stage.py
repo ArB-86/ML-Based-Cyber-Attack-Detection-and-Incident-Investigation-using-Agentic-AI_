@@ -98,6 +98,8 @@ def test_ai_only_stage_rejects_zero_incident_limit(tmp_path):
 
 
 def test_ai_only_summary_separates_current_run_from_preserved_dossier_counts(tmp_path):
+    import networkx as nx
+
     flows = pd.DataFrame([
         {
             "timestamp": "2017-07-03T10:00:00Z",
@@ -123,34 +125,33 @@ def test_ai_only_summary_separates_current_run_from_preserved_dossier_counts(tmp
             "alert_sources": "BEHAVIOURAL_RULE",
             "anomaly_score": 0.02,
         },
-        {
-            "timestamp": "2017-07-03T10:30:00Z",
-            "src_ip": "10.0.0.2",
-            "dst_ip": "10.0.0.8",
-            "protocol": 6,
-            "src_port": 52000,
-            "dst_port": 443,
-            "alert": True,
-            "detection_reasons": "ISOLATION_FOREST_ANOMALY",
-            "alert_sources": "ISOLATION_FOREST",
-            "anomaly_score": 0.03,
-        },
-        {
-            "timestamp": "2017-07-03T10:30:20Z",
-            "src_ip": "10.0.0.2",
-            "dst_ip": "10.0.0.8",
-            "protocol": 6,
-            "src_port": 52001,
-            "dst_port": 443,
-            "alert": True,
-            "detection_reasons": "ISOLATION_FOREST_ANOMALY",
-            "alert_sources": "ISOLATION_FOREST",
-            "anomaly_score": 0.04,
-        },
     ])
 
     _, _, upstream = run_soc_investigation(flows, tmp_path)
-    assert upstream["incident_count"] == 2
+    assert upstream["incident_count"] == 1
+
+    # Add a second, pre-existing dossier record sharing the same evidence.
+    # This isolates summary-count behaviour from incident-formation policy.
+    dossier_path = tmp_path / "incident_investigation.json"
+    payload = json.loads(dossier_path.read_text())
+    existing = json.loads(json.dumps(payload["incidents"][0]))
+    existing["incident_id"] = "INC-99999"
+    payload["incidents"].append(existing)
+    payload["incident_count"] = len(payload["incidents"])
+    dossier_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    graph_path = tmp_path / "attack_graph.gexf"
+    graph = nx.read_gexf(graph_path)
+    new_node = "incident:INC-99999"
+    graph.add_node(
+        new_node,
+        node_type="incident",
+        label="INC-99999",
+        title=existing["title"],
+    )
+    for event_id in existing["event_ids"]:
+        graph.add_edge(new_node, f"event:{event_id}", relation="contains", relations="contains")
+    nx.write_gexf(graph, graph_path)
 
     def fake_reasoner(context):
         return {
@@ -169,7 +170,7 @@ def test_ai_only_summary_separates_current_run_from_preserved_dossier_counts(tmp
     assert result["preserved_preexisting_agent_records"] == 1
     assert result["dossier_counts"]["agent_investigations_executed"] == 2
 
-    payload = json.loads((tmp_path / "incident_investigation.json").read_text())
+    payload = json.loads(dossier_path.read_text())
     modes = [
         item["investigation_agent"]["mode"]
         for item in payload["incidents"]
