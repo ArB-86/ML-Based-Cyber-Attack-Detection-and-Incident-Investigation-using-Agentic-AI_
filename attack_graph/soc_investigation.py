@@ -1575,6 +1575,302 @@ class AgenticInvestigationAgent:
             "get_correlated_events": self.tools.get_correlated_events,
         }
 
+
+    # Keep the full evidence in the investigator and validator. Only the
+    # model-facing view is sampled; read-only tools can retrieve details.
+    REASONER_TIMELINE_SAMPLE = 24
+    REASONER_GRAPH_EDGE_SAMPLE = 16
+    REASONER_RELATED_NODE_SAMPLE = 16
+    REASONER_IDS_PER_SIGNAL = 6
+    REASONER_FINDING_EDGE_SAMPLE = 3
+    REASONER_TOOL_RECORD_SAMPLE = 10
+
+    @staticmethod
+    def _sample_reasoner_items(items: Any, limit: int) -> list[Any]:
+        values = list(items) if isinstance(items, (list, tuple, set)) else []
+        if len(values) <= limit:
+            return values
+        if limit <= 0:
+            return []
+        if limit == 1:
+            return [values[0]]
+        indices = sorted({
+            round(position * (len(values) - 1) / (limit - 1))
+            for position in range(limit)
+        })
+        return [values[index] for index in indices]
+
+    @staticmethod
+    def _compact_reasoner_event(event: dict[str, Any]) -> dict[str, Any]:
+        fields = (
+            "event_id", "start_time", "end_time", "src_ip", "dst_ip",
+            "protocol", "flow_count", "mean_anomaly_score", "min_anomaly_score",
+            "src_ports", "dst_ports", "detection_reasons", "review_reasons",
+            "context_signals", "alert_sources",
+        )
+        compact: dict[str, Any] = {}
+        for field in fields:
+            if field not in event:
+                continue
+            value = event[field]
+            if field in {"src_ports", "dst_ports"}:
+                if isinstance(value, (list, tuple, set)):
+                    values = list(value)
+                    compact[field] = values[:8]
+                    if len(values) > 8:
+                        compact[f"{field}_omitted_count"] = len(values) - 8
+                elif isinstance(value, str):
+                    compact[field] = value[:160]
+                else:
+                    compact[field] = value
+            elif isinstance(value, str) and len(value) > 240:
+                compact[field] = value[:240]
+            else:
+                compact[field] = value
+        return compact
+
+    @classmethod
+    def _compact_reasoner_evidence(
+        cls,
+        incident: dict[str, Any],
+        timeline: list[dict[str, Any]],
+        graph: dict[str, Any],
+        detections: dict[str, Any],
+        findings: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Create a small, explicitly sampled LLM view without changing evidence."""
+        incident_fields = (
+            "incident_id", "title", "start_time", "end_time", "duration_seconds",
+            "event_ids", "total_flows", "detection_reasons", "review_reasons",
+            "context_signals", "status",
+        )
+        compact_incident = {
+            key: incident[key] for key in incident_fields if key in incident
+        }
+        compact_incident["event_ids"] = [
+            str(value) for value in incident.get("event_ids", [])
+        ]
+        compact_incident["timeline_total_events"] = len(timeline)
+
+        triage = incident.get("triage", {})
+        if isinstance(triage, dict):
+            compact_incident["triage"] = {
+                key: triage[key]
+                for key in (
+                    "severity", "priority_score", "risk_score", "confidence",
+                    "confidence_basis",
+                )
+                if key in triage
+            }
+
+        source_keys = ("ip", "unique_targets", "unique_sources", "event_ids")
+        graph_analysis = incident.get("graph_analysis", {})
+        if isinstance(graph_analysis, dict):
+            compact_analysis = {
+                key: graph_analysis[key]
+                for key in (
+                    "event_count", "graph_event_links", "graph_density",
+                    "edge_relation_counts", "unique_sources", "unique_targets",
+                    "unique_services", "max_source_fanout", "max_target_fanin",
+                )
+                if key in graph_analysis
+            }
+            for field in ("top_sources", "top_targets"):
+                leads = graph_analysis.get(field, [])
+                compact_leads = []
+                for lead in leads[:3] if isinstance(leads, list) else []:
+                    if not isinstance(lead, dict):
+                        continue
+                    item = {
+                        key: lead[key] for key in source_keys if key in lead and key != "event_ids"
+                    }
+                    ids = lead.get("event_ids", [])
+                    item["event_id_count"] = len(ids) if isinstance(ids, list) else 0
+                    item["event_ids"] = [
+                        str(value) for value in cls._sample_reasoner_items(
+                            ids, cls.REASONER_IDS_PER_SIGNAL
+                        )
+                    ]
+                    compact_leads.append(item)
+                compact_analysis[field] = compact_leads
+            pivots = graph_analysis.get("pivot_hosts", [])
+            compact_analysis["pivot_hosts"] = cls._sample_reasoner_items(pivots, 12)
+            compact_analysis["pivot_host_count"] = len(pivots) if isinstance(pivots, list) else 0
+            compact_analysis["top_central_events"] = cls._sample_reasoner_items(
+                graph_analysis.get("top_central_events", []), 5
+            )
+            compact_incident["graph_analysis"] = compact_analysis
+
+        hypotheses = incident.get("attack_hypotheses", [])
+        compact_hypotheses = []
+        for hypothesis in hypotheses[:4] if isinstance(hypotheses, list) else []:
+            if not isinstance(hypothesis, dict):
+                continue
+            item = {
+                key: hypothesis[key]
+                for key in ("technique_id", "technique", "confidence", "evidence", "caveat")
+                if key in hypothesis
+            }
+            ids = hypothesis.get("evidence_event_ids", [])
+            item["evidence_event_ids"] = [
+                str(value) for value in cls._sample_reasoner_items(
+                    ids, cls.REASONER_IDS_PER_SIGNAL
+                )
+            ]
+            item["evidence_event_count"] = len(ids) if isinstance(ids, list) else 0
+            compact_hypotheses.append(item)
+        compact_incident["attack_hypotheses"] = compact_hypotheses
+        compact_incident["recommended_actions"] = cls._sample_reasoner_items(
+            incident.get("recommended_actions", []), 6
+        )
+
+        ordered_timeline = sorted(
+            timeline,
+            key=lambda item: (
+                str(item.get("start_time", item.get("timestamp", ""))),
+                str(item.get("event_id", "")),
+            ),
+        )
+        sampled_timeline = cls._sample_reasoner_items(
+            ordered_timeline, cls.REASONER_TIMELINE_SAMPLE
+        )
+        compact_timeline = [
+            cls._compact_reasoner_event(event)
+            for event in sampled_timeline
+            if isinstance(event, dict)
+        ]
+        compact_incident["timeline_sampled_events"] = len(compact_timeline)
+        compact_incident["timeline_sample_is_evenly_spaced"] = (
+            len(ordered_timeline) > len(compact_timeline)
+        )
+
+        raw_edges = graph.get("event_edges", [])
+        raw_edges = raw_edges if isinstance(raw_edges, list) else []
+        pivot_edges = [
+            edge for edge in raw_edges
+            if isinstance(edge, dict) and "host_pivot" in str(edge.get("relation", "")).lower()
+        ]
+        other_edges = [
+            edge for edge in raw_edges
+            if isinstance(edge, dict) and edge not in pivot_edges
+        ]
+        edge_budget = cls.REASONER_GRAPH_EDGE_SAMPLE
+        chosen_edges = pivot_edges[:edge_budget]
+        if len(chosen_edges) < edge_budget:
+            chosen_edges.extend(other_edges[:edge_budget - len(chosen_edges)])
+        compact_graph = {
+            "incident_node": graph.get("incident_node"),
+            "member_event_nodes": cls._sample_reasoner_items(
+                graph.get("member_event_nodes", []), cls.REASONER_TIMELINE_SAMPLE
+            ),
+            "member_event_node_count": len(graph.get("member_event_nodes", [])),
+            "member_event_nodes_sampled": (
+                len(graph.get("member_event_nodes", [])) > cls.REASONER_TIMELINE_SAMPLE
+            ),
+            "related_nodes": cls._sample_reasoner_items(
+                graph.get("related_nodes", []), cls.REASONER_RELATED_NODE_SAMPLE
+            ),
+            "related_node_count": len(graph.get("related_nodes", [])),
+            "event_edges": chosen_edges,
+            "event_edge_count": len(raw_edges),
+            "host_pivot_edge_count": len(pivot_edges),
+            "event_edges_sampled": len(raw_edges) > len(chosen_edges),
+        }
+
+        compact_detections: dict[str, Any] = {}
+        detection_counts: dict[str, dict[str, int]] = {}
+        for field in (
+            "reason_to_event_ids", "review_reason_to_event_ids",
+            "context_signal_to_event_ids", "source_to_event_ids",
+        ):
+            mapping = detections.get(field, {})
+            if not isinstance(mapping, dict):
+                compact_detections[field] = {}
+                detection_counts[field] = {}
+                continue
+            compact_detections[field] = {}
+            detection_counts[field] = {}
+            for label, ids in sorted(mapping.items()):
+                values = list(ids) if isinstance(ids, (list, tuple, set)) else []
+                detection_counts[field][str(label)] = len(values)
+                compact_detections[field][str(label)] = [
+                    str(value) for value in cls._sample_reasoner_items(
+                        values, cls.REASONER_IDS_PER_SIGNAL
+                    )
+                ]
+        compact_detections["event_id_counts"] = detection_counts
+
+        compact_findings = []
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            item = {
+                key: value for key, value in finding.items()
+                if key not in {"evidence_event_ids", "evidence_edges"}
+            }
+            refs = finding.get("evidence_event_ids", [])
+            refs = list(refs) if isinstance(refs, (list, tuple, set)) else []
+            item["evidence_event_ids"] = [
+                str(value) for value in cls._sample_reasoner_items(
+                    refs, cls.REASONER_IDS_PER_SIGNAL
+                )
+            ]
+            item["evidence_event_count"] = len(refs)
+            item["evidence_event_ids_sampled"] = len(refs) > cls.REASONER_IDS_PER_SIGNAL
+            edges = finding.get("evidence_edges", [])
+            edges = list(edges) if isinstance(edges, (list, tuple, set)) else []
+            item["evidence_edges"] = cls._sample_reasoner_items(
+                edges, cls.REASONER_FINDING_EDGE_SAMPLE
+            )
+            item["evidence_edge_count"] = len(edges)
+            compact_findings.append(item)
+
+        return {
+            "incident": compact_incident,
+            "timeline": compact_timeline,
+            "graph": compact_graph,
+            "detections": compact_detections,
+            "deterministic_findings": compact_findings,
+        }
+
+    @classmethod
+    def _compact_tool_result(cls, tool_name: str, result: Any) -> Any:
+        """Bound tool outputs carried into the next model round."""
+        if isinstance(result, dict):
+            if "event_id" in result:
+                return cls._compact_reasoner_event(result)
+            return {
+                key: value for key, value in result.items()
+                if key not in {"event_ids", "timeline", "graph_analysis"}
+            }
+        if not isinstance(result, list):
+            return result
+        if tool_name == "get_correlated_events":
+            pivots = [
+                item for item in result
+                if isinstance(item, dict) and "host_pivot" in str(item.get("relation", "")).lower()
+            ]
+            others = [
+                item for item in result
+                if isinstance(item, dict) and item not in pivots
+            ]
+            sample = pivots[:12] + others[:max(0, 12 - min(12, len(pivots)))]
+            return {
+                "total_relationships": len(result),
+                "relationships": sample,
+                "sampled": len(result) > len(sample),
+            }
+        records = [
+            cls._compact_reasoner_event(item)
+            for item in result[:cls.REASONER_TOOL_RECORD_SAMPLE]
+            if isinstance(item, dict)
+        ]
+        return {
+            "total_events": len(result),
+            "events": records,
+            "sampled": len(result) > len(records),
+        }
+
     @staticmethod
     def _decode_reasoner_response(response: Any) -> dict[str, Any]:
         if isinstance(response, dict):
@@ -1765,6 +2061,10 @@ class AgenticInvestigationAgent:
         model_response: dict[str, Any] = {}
 
         if self.reasoner is not None:
+            reasoner_evidence = self._compact_reasoner_evidence(
+                incident, timeline, graph, detections, claims
+            )
+
             def collect_model_finding_candidates(response: dict[str, Any]) -> None:
                 """Retain typed findings from every reasoning phase for validation."""
                 for field in ("preliminary_findings", "findings"):
@@ -1847,11 +2147,11 @@ class AgenticInvestigationAgent:
                         "compromise from flow metadata alone. Return JSON with tool_calls (max 5), "
                         "preliminary_findings (each with claim_type, claim and event IDs) and narrative."
                     ),
-                    "incident": incident,
-                    "timeline": timeline,
-                    "graph": graph,
-                    "detections": detections,
-                    "deterministic_findings": claims,
+                    "incident": reasoner_evidence["incident"],
+                    "timeline": reasoner_evidence["timeline"],
+                    "graph": reasoner_evidence["graph"],
+                    "detections": reasoner_evidence["detections"],
+                    "deterministic_findings": reasoner_evidence["deterministic_findings"],
                     "tool_catalog": self.TOOL_CATALOG,
                     "response_contract": {
                         "tool_calls": [{
@@ -2046,7 +2346,7 @@ class AgenticInvestigationAgent:
                             round_results.append({
                                 "tool": name,
                                 "arguments": arguments,
-                                "result": result,
+                                "result": self._compact_tool_result(name, result),
                             })
 
                     deferred_requests = len(requested_tools) - allowed_this_round
@@ -2072,13 +2372,13 @@ class AgenticInvestigationAgent:
                                     "return final JSON with tool_calls as an empty array, findings and "
                                     "narrative. Each finding must identify one claim_type and cite only supporting events. Do not infer compromise from flow metadata alone."
                                 ),
-                                "incident": incident,
+                                "incident": reasoner_evidence["incident"],
                                 "initial_evidence": {
-                                    "timeline": timeline,
-                                    "graph": graph,
-                                    "detections": detections,
+                                    "timeline": reasoner_evidence["timeline"],
+                                    "graph": reasoner_evidence["graph"],
+                                    "detections": reasoner_evidence["detections"],
                                 },
-                                "deterministic_findings": claims,
+                                "deterministic_findings": reasoner_evidence["deterministic_findings"],
                                 "tool_catalog": self.TOOL_CATALOG,
                                 "completed_tool_results": all_tool_results,
                                 "round": round_number,
@@ -2104,13 +2404,13 @@ class AgenticInvestigationAgent:
                                 "Do not invent users, process execution, successful logins, exfiltration "
                                 "or business impact. Each finding must identify one claim_type and cite only supporting events."
                             ),
-                            "incident": incident,
+                            "incident": reasoner_evidence["incident"],
                             "initial_evidence": {
-                                "timeline": timeline,
-                                "graph": graph,
-                                "detections": detections,
+                                "timeline": reasoner_evidence["timeline"],
+                                "graph": reasoner_evidence["graph"],
+                                "detections": reasoner_evidence["detections"],
                             },
-                            "deterministic_findings": claims,
+                            "deterministic_findings": reasoner_evidence["deterministic_findings"],
                             "completed_tool_results": all_tool_results,
                             "response_contract": {
                                 "tool_calls": [],
@@ -2195,7 +2495,7 @@ class AgenticInvestigationAgent:
             "llm_tool_rounds": llm_tool_rounds,
             "llm_tool_requests": llm_tool_requests,
             "llm_tool_calls_executed": llm_tool_calls_executed,
-            "status": "completed",
+            "status": "completed_with_fallback" if reasoner_error is not None else "completed",
             "plan": [
                 "retrieve_incident_context",
                 "inspect_chronological_event_timeline",
