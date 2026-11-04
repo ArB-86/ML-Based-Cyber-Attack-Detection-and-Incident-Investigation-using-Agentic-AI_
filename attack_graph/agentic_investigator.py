@@ -21,6 +21,7 @@ from .soc_investigation import (
     IncidentEvidenceTools,
     _write_report,
 )
+from .investigation_presentation import write_agentic_investigation_outputs
 
 
 _REQUIRED_EVENT_COLUMNS = {
@@ -314,6 +315,11 @@ def run(
         graph,
         out / "incident_investigation_report.md",
     )
+    processed_ids = {str(item["incident_id"]) for item in processed}
+    presentation_outputs = write_agentic_investigation_outputs(
+        str(out),
+        [item for item in incidents if str(item.get("incident_id")) in processed_ids],
+    )
 
     # Distinguish work performed in this invocation from pre-existing records
     # retained in the full dossier. Legacy runs may already contain thousands
@@ -337,9 +343,12 @@ def run(
         "outputs": [
             "incident_investigation.json",
             "incident_investigation_report.md",
-            "soc_pipeline_manifest.json",
             "agentic_investigation_summary.json",
+            "agentic_investigation_explanation.json",
+            "agentic_investigation_report.md",
+            "soc_pipeline_manifest.json",
         ],
+        "agentic_output_paths": presentation_outputs,
     }
     _atomic_json_write(out / "agentic_investigation_summary.json", summary)
 
