@@ -124,7 +124,7 @@ def test_ai_only_summary_separates_current_run_from_preserved_dossier_counts(tmp
             "anomaly_score": 0.02,
         },
         {
-            "timestamp": "2017-07-03T10:10:00Z",
+            "timestamp": "2017-07-03T10:30:00Z",
             "src_ip": "10.0.0.2",
             "dst_ip": "10.0.0.8",
             "protocol": 6,
@@ -136,7 +136,7 @@ def test_ai_only_summary_separates_current_run_from_preserved_dossier_counts(tmp
             "anomaly_score": 0.03,
         },
         {
-            "timestamp": "2017-07-03T10:10:20Z",
+            "timestamp": "2017-07-03T10:30:20Z",
             "src_ip": "10.0.0.2",
             "dst_ip": "10.0.0.8",
             "protocol": 6,
