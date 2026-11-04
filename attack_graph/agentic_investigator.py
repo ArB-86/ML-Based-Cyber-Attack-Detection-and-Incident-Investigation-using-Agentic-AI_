@@ -229,6 +229,7 @@ def run(
     *,
     reasoner=None,
     max_incidents: int | None = 1,
+    incident_id: str | None = None,
 ) -> dict[str, Any]:
     """Run AI investigation only; preserve every upstream detection artefact."""
     if max_incidents is not None and (
@@ -248,7 +249,17 @@ def run(
     agent = AgenticInvestigationAgent(tools, reasoner=reasoner)
 
     ordered = sorted(incidents, key=_priority_key)
-    selected = ordered if max_incidents is None else ordered[:max_incidents]
+    if incident_id is not None:
+        requested_id = str(incident_id).strip()
+        selected_incident = next(
+            (item for item in ordered if str(item.get("incident_id")) == requested_id),
+            None,
+        )
+        if not requested_id or selected_incident is None:
+            raise KeyError(f"Unknown incident_id requested for AI investigation: {incident_id!r}")
+        selected = [selected_incident]
+    else:
+        selected = ordered if max_incidents is None else ordered[:max_incidents]
     selected_ids = {str(item["incident_id"]) for item in selected}
     processed: list[dict[str, Any]] = []
     touched_this_run: list[dict[str, Any]] = []
@@ -403,6 +414,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum number of highest-priority incidents to investigate (default: 1).",
     )
     parser.add_argument(
+        "--incident-id",
+        default=None,
+        help="Investigate this exact incident ID instead of selecting by priority.",
+    )
+    parser.add_argument(
         "--all-incidents",
         action="store_true",
         help="Investigate every candidate incident; may trigger many local Ollama calls.",
@@ -442,6 +458,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output_dir,
             reasoner=reasoner,
             max_incidents=limit,
+            incident_id=args.incident_id,
         )
     except Exception as exc:
         print(f"Agentic AI investigation failed: {type(exc).__name__}: {exc}", file=sys.stderr)
