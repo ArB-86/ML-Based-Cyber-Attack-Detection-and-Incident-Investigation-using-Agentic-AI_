@@ -36,6 +36,65 @@ Only cite event IDs visible in the supplied context. Use a supported claim type
 from the response contract. State uncertainty and evidence gaps explicitly."""
 
 
+FINAL_SYNTHESIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tool_calls": {
+            "type": "array",
+            "maxItems": 0,
+            "items": {"type": "object"},
+        },
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim_type": {"type": "string"},
+                    "claim": {"type": "string"},
+                    "evidence_event_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high"],
+                    },
+                },
+                "required": [
+                    "claim_type",
+                    "claim",
+                    "evidence_event_ids",
+                    "confidence",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "finding_disposition": {
+            "type": "string",
+            "enum": [
+                "findings_proposed",
+                "no_additional_findings_supported",
+            ],
+        },
+        "finding_disposition_reason": {"type": "string"},
+        "narrative": {"type": "string"},
+    },
+    "required": [
+        "tool_calls",
+        "findings",
+        "finding_disposition",
+        "finding_disposition_reason",
+        "narrative",
+    ],
+    "additionalProperties": False,
+}
+
+
+def _is_final_synthesis(context: dict[str, Any]) -> bool:
+    task = context.get("task")
+    return isinstance(task, str) and "FINAL SYNTHESIS" in task.upper()
+
+
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -116,7 +175,9 @@ def _parse_model_content(content: str) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         excerpt = stripped[:400].replace("\n", " ")
         raise RuntimeError(
-            "Qwen response was not valid JSON. "
+            "Qwen response was not valid JSON "
+            f"(line {exc.lineno}, column {exc.colno}; "
+            f"response_chars={len(stripped)}). "
             f"Response prefix: {excerpt!r}"
         ) from exc
     if not isinstance(value, dict):
@@ -140,13 +201,25 @@ def reasoner(context: dict[str, Any]) -> dict[str, Any]:
         "response_contract included in the JSON. Return strict JSON only.\n\n"
         + json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)
     )
+    is_final_synthesis = _is_final_synthesis(context)
+    system_message = SYSTEM_PROMPT
+    response_format: str | dict[str, Any] = "json"
+    if is_final_synthesis:
+        system_message += (
+            "\\nFINAL SYNTHESIS MODE: Return only the five fields required by the "
+            "provided schema. tool_calls must be an empty array. Do not copy, replay, "
+            "or nest completed tool results in the response. Summarise evidence in "
+            "findings and narrative only."
+        )
+        response_format = FINAL_SYNTHESIS_SCHEMA
+
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_message},
             {"role": "user", "content": user_message},
         ],
-        "format": "json",
+        "format": response_format,
         "stream": False,
         "keep_alive": keep_alive,
         "options": {
@@ -167,7 +240,21 @@ def reasoner(context: dict[str, Any]) -> dict[str, Any]:
     content = message.get("content")
     if not isinstance(content, str) or not content.strip():
         raise RuntimeError("Ollama returned an empty assistant message.")
-    return _parse_model_content(content)
+    try:
+        return _parse_model_content(content)
+    except RuntimeError as exc:
+        metadata = []
+        done_reason = response.get("done_reason")
+        eval_count = response.get("eval_count")
+        if done_reason is not None:
+            metadata.append(f"done_reason={done_reason}")
+        if eval_count is not None:
+            metadata.append(f"eval_count={eval_count}")
+        if metadata:
+            raise RuntimeError(
+                f"{exc} Ollama generation metadata: {', '.join(metadata)}."
+            ) from exc
+        raise
 
 
 def check_ollama() -> dict[str, Any]:
