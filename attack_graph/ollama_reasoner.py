@@ -131,8 +131,8 @@ def reasoner(context: dict[str, Any]) -> dict[str, Any]:
 
     model = _model_name()
     timeout = _env_int("OLLAMA_TIMEOUT_SECONDS", 900)
-    num_ctx = _env_int("OLLAMA_NUM_CTX", 32768)
-    num_predict = _env_int("OLLAMA_NUM_PREDICT", 4096)
+    num_ctx = _env_int("OLLAMA_NUM_CTX", 8192)
+    num_predict = _env_int("OLLAMA_NUM_PREDICT", 2048)
     keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "5m")
 
     user_message = (
