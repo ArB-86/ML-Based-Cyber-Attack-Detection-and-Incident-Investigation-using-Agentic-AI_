@@ -36,6 +36,95 @@ Only cite event IDs visible in the supplied context. Use a supported claim type
 from the response contract. State uncertainty and evidence gaps explicitly."""
 
 
+SUPPORTED_CLAIM_TYPES = [
+    "isolation_forest_anomaly",
+    "high_source_fanout",
+    "horizontal_scan",
+    "brute_force_flow_pattern",
+    "multi_host_multi_service",
+    "host_pivot_lead",
+]
+
+TOOL_CALL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string",
+            "enum": [
+                "get_event",
+                "get_host_activity",
+                "get_service_activity",
+                "get_correlated_events",
+            ],
+        },
+        "arguments": {
+            "type": "object",
+            "additionalProperties": True,
+        },
+    },
+    "required": ["name", "arguments"],
+    "additionalProperties": False,
+}
+
+INITIAL_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tool_calls": {
+            "type": "array",
+            "maxItems": 5,
+            "items": TOOL_CALL_SCHEMA,
+        },
+        "preliminary_findings": {
+            "type": "array",
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim_type": {
+                        "type": "string",
+                        "enum": SUPPORTED_CLAIM_TYPES,
+                    },
+                    "claim": {"type": "string", "maxLength": 420},
+                    "evidence_event_ids": {
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": {"type": "string", "maxLength": 32},
+                    },
+                    "confidence": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high"],
+                    },
+                },
+                "required": [
+                    "claim_type",
+                    "claim",
+                    "evidence_event_ids",
+                    "confidence",
+                ],
+                "additionalProperties": False,
+            },
+        },
+        "narrative": {"type": "string", "maxLength": 900},
+    },
+    "required": ["tool_calls", "preliminary_findings", "narrative"],
+    "additionalProperties": False,
+}
+
+TOOL_FOLLOWUP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tool_calls": {
+            "type": "array",
+            "maxItems": 5,
+            "items": TOOL_CALL_SCHEMA,
+        },
+        "evidence_gap_note": {"type": "string", "maxLength": 500},
+    },
+    "required": ["tool_calls", "evidence_gap_note"],
+    "additionalProperties": False,
+}
+
+
 FINAL_SYNTHESIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -52,14 +141,7 @@ FINAL_SYNTHESIS_SCHEMA = {
                 "properties": {
                     "claim_type": {
                         "type": "string",
-                        "enum": [
-                            "isolation_forest_anomaly",
-                            "high_source_fanout",
-                            "horizontal_scan",
-                            "brute_force_flow_pattern",
-                            "multi_host_multi_service",
-                            "host_pivot_lead",
-                        ],
+                        "enum": SUPPORTED_CLAIM_TYPES,
                     },
                     "claim": {"type": "string", "maxLength": 420},
                     "evidence_event_ids": {
@@ -105,6 +187,21 @@ FINAL_SYNTHESIS_SCHEMA = {
 def _is_final_synthesis(context: dict[str, Any]) -> bool:
     task = context.get("task")
     return isinstance(task, str) and "FINAL SYNTHESIS" in task.upper()
+
+
+def _is_initial_plan(context: dict[str, Any]) -> bool:
+    return all(
+        key in context
+        for key in ("incident", "timeline", "graph", "detections", "tool_catalog")
+    )
+
+
+def _is_tool_followup(context: dict[str, Any]) -> bool:
+    return (
+        not _is_final_synthesis(context)
+        and "completed_tool_results" in context
+        and "round" in context
+    )
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
@@ -214,9 +311,28 @@ def reasoner(context: dict[str, Any]) -> dict[str, Any]:
         + json.dumps(context, ensure_ascii=False, separators=(",", ":"), default=str)
     )
     is_final_synthesis = _is_final_synthesis(context)
+    is_initial_plan = _is_initial_plan(context)
+    is_tool_followup = _is_tool_followup(context)
     system_message = SYSTEM_PROMPT
     response_format: str | dict[str, Any] = "json"
-    if is_final_synthesis:
+    if is_initial_plan:
+        system_message += (
+            "\\nINITIAL PLAN MODE: Return only tool_calls, preliminary_findings, "
+            "and narrative. Do not repeat or reproduce the incident context, "
+            "timeline, graph, detections, or evidence records. Request only "
+            "allowlisted read-only tools. Preliminary findings are tentative "
+            "proposals, not validated conclusions."
+        )
+        response_format = INITIAL_PLAN_SCHEMA
+    elif is_tool_followup:
+        system_message += (
+            "\\nTOOL FOLLOW-UP MODE: Return only tool_calls and evidence_gap_note. "
+            "Do not repeat supplied evidence or completed tool results. Request "
+            "only allowlisted read-only tools, or return an empty tool_calls array "
+            "when no further retrieval is needed."
+        )
+        response_format = TOOL_FOLLOWUP_SCHEMA
+    elif is_final_synthesis:
         num_predict = _env_int(
             "OLLAMA_FINAL_NUM_PREDICT",
             max(num_predict, 3072),
