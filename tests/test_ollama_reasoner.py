@@ -88,6 +88,9 @@ def test_reasoner_uses_initial_plan_schema_instead_of_generic_json(monkeypatch):
 
     schema = captured["payload"]["format"]
     assert isinstance(schema, dict)
+    assert "Do not repeat or reproduce the incident context" in (
+        captured["payload"]["messages"][0]["content"]
+    )
     assert schema["required"] == [
         "tool_calls",
         "preliminary_findings",
