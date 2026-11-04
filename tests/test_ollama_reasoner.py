@@ -38,6 +38,16 @@ def test_reasoner_posts_context_and_decodes_json(monkeypatch):
     schema = captured["payload"]["format"]
     assert isinstance(schema, dict)
     assert schema["properties"]["tool_calls"]["maxItems"] == 0
+    finding_schema = schema["properties"]["findings"]["items"]["properties"]
+    assert finding_schema["claim_type"]["enum"] == [
+        "isolation_forest_anomaly",
+        "high_source_fanout",
+        "horizontal_scan",
+        "brute_force_flow_pattern",
+        "multi_host_multi_service",
+        "host_pivot_lead",
+    ]
+    assert captured["payload"]["options"]["num_predict"] == 3072
     assert schema["required"] == [
         "tool_calls",
         "findings",
