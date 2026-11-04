@@ -91,7 +91,7 @@ By default the adapter uses:
 
 - Host: `http://127.0.0.1:11434`
 - Model: `qwen2.5:7b-instruct`
-- Context allocation: `32768` tokens
+- Context allocation: `8192` tokens
 - Request timeout: `900` seconds
 
 You can override these with environment variables:
@@ -99,13 +99,13 @@ You can override these with environment variables:
 ```powershell
 $env:OLLAMA_HOST = "http://127.0.0.1:11434"
 $env:OLLAMA_MODEL = "qwen2.5:7b-instruct"
-$env:OLLAMA_NUM_CTX = "32768"
-$env:OLLAMA_NUM_PREDICT = "4096"
+$env:OLLAMA_NUM_CTX = "8192"
+$env:OLLAMA_NUM_PREDICT = "2048"
 $env:OLLAMA_TIMEOUT_SECONDS = "900"
 python -m attack_graph.ollama_reasoner --check
 ```
 
-The incident evidence bundle can be large. The adapter requests JSON output and sets `num_ctx` explicitly. Use a model/context size that your machine can support. If Ollama reports a context-length or memory error, reduce the context allocation only if the model still fits the request, or use a compatible higher-context model / machine; do not claim an LLM investigation passed when the reasoner failed.
+The investigator keeps the full event, graph and detector evidence locally for validation, but sends a bounded sample to Qwen: up to 24 timeline events, 16 graph relationships, and capped event-ID examples per signal. The read-only tools can retrieve additional incident-scoped details when the model requests them. The default context allocation is `8192` tokens and the default output budget is `2048` tokens. Override these only after checking the size of the model-facing prompt and the memory available on your machine. A reasoner timeout is recorded as `completed_with_fallback`, not as a successful LLM synthesis.
 
 Ollama API references: [Chat API](https://docs.ollama.com/api/chat) and [Qwen2.5 model library](https://ollama.com/library/qwen2.5).
 
@@ -125,7 +125,7 @@ Linux / macOS or direct CLI:
 
 ```bash
 export OLLAMA_MODEL="qwen2.5:7b-instruct"
-export OLLAMA_NUM_CTX="32768"
+export OLLAMA_NUM_CTX="8192"
 python -m attack_graph.pipeline ./data/raw/cicids2017 \
   --output-dir ./outputs/run_001 \
   --reasoner-callable attack_graph.ollama_reasoner:reasoner \
