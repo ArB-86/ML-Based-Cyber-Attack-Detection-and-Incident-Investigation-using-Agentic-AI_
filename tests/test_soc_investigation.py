@@ -408,8 +408,11 @@ def test_agent_investigation_limit_runs_one_llm_incident_and_marks_rest_skipped(
     assert summary["agent_investigations_skipped"] == 1
     assert summary["reasoner_incidents"] == 1
     assert len(reasoner_calls) == 2
-    assert summary["llm_syntheses_successful"] == 1
-    assert summary["reasoner_executions_successful"] == 1
+    llm_agent = next(
+        agent for agent in agents if agent["mode"] == "tool_assisted_llm"
+    )
+    assert llm_agent["model_synthesis_successful"] is True
+    assert llm_agent["model_synthesis_status"] == "validated_no_additional_findings"
     assert sum(agent["mode"] == "tool_assisted_llm" for agent in agents) == 1
     assert sum(agent["mode"] == "not_run_limit" for agent in agents) == 1
     assert sum(agent["status"] == "skipped_by_limit" for agent in agents) == 1
