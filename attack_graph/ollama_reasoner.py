@@ -50,7 +50,17 @@ FINAL_SYNTHESIS_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "claim_type": {"type": "string", "maxLength": 48},
+                    "claim_type": {
+                        "type": "string",
+                        "enum": [
+                            "isolation_forest_anomaly",
+                            "high_source_fanout",
+                            "horizontal_scan",
+                            "brute_force_flow_pattern",
+                            "multi_host_multi_service",
+                            "host_pivot_lead",
+                        ],
+                    },
                     "claim": {"type": "string", "maxLength": 420},
                     "evidence_event_ids": {
                         "type": "array",
