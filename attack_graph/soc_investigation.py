@@ -1578,12 +1578,12 @@ class AgenticInvestigationAgent:
 
     # Keep the full evidence in the investigator and validator. Only the
     # model-facing view is sampled; read-only tools can retrieve details.
-    REASONER_TIMELINE_SAMPLE = 24
-    REASONER_GRAPH_EDGE_SAMPLE = 16
-    REASONER_RELATED_NODE_SAMPLE = 16
-    REASONER_IDS_PER_SIGNAL = 6
-    REASONER_FINDING_EDGE_SAMPLE = 3
-    REASONER_TOOL_RECORD_SAMPLE = 10
+    REASONER_TIMELINE_SAMPLE = 16
+    REASONER_GRAPH_EDGE_SAMPLE = 12
+    REASONER_RELATED_NODE_SAMPLE = 12
+    REASONER_IDS_PER_SIGNAL = 4
+    REASONER_FINDING_EDGE_SAMPLE = 2
+    REASONER_TOOL_RECORD_SAMPLE = 8
 
     @staticmethod
     def _sample_reasoner_items(items: Any, limit: int) -> list[Any]:
@@ -2142,9 +2142,12 @@ class AgenticInvestigationAgent:
             initial_response = invoke_reasoner(
                 {
                     "task": (
-                        "Act as a SOC analyst. Inspect the supplied evidence, identify what is "
-                        "still unknown, and request only relevant read-only tools. Do not assert "
-                        "compromise from flow metadata alone. Return JSON with tool_calls (max 5), "
+                        "Act as a SOC analyst. The timeline and graph edges are bounded, representative "
+                        "samples; counts and incident.event_ids describe the full incident. Use the "
+                        "incident-scoped read-only tools to inspect additional event details or graph "
+                        "relationships before making claims that need them. Cite only event IDs listed "
+                        "in incident.event_ids. Identify what remains unknown and do not assert compromise "
+                        "from flow metadata alone. Return JSON with tool_calls (max 5), "
                         "preliminary_findings (each with claim_type, claim and event IDs) and narrative."
                     ),
                     "incident": reasoner_evidence["incident"],
