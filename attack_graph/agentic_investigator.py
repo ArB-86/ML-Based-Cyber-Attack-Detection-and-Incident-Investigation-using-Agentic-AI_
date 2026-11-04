@@ -366,8 +366,14 @@ def run(
             manifest["counts"] = manifest_counts
         manifest_counts.update(counts)
         artifacts = manifest.setdefault("artifacts", [])
-        if isinstance(artifacts, list) and "agentic_investigation_summary.json" not in artifacts:
-            artifacts.append("agentic_investigation_summary.json")
+        if isinstance(artifacts, list):
+            for artifact_name in (
+                "agentic_investigation_summary.json",
+                "agentic_investigation_explanation.json",
+                "agentic_investigation_report.md",
+            ):
+                if artifact_name not in artifacts:
+                    artifacts.append(artifact_name)
         manifest["agentic_investigation_stage"] = {
             "entry_point": "python -m attack_graph.agentic_investigator",
             "upstream_stages_reexecuted": False,
