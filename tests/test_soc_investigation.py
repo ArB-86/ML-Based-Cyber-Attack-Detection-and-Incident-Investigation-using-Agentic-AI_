@@ -1325,12 +1325,12 @@ def test_reasoner_context_is_compacted_without_reducing_full_evidence_scope(tmp_
     def fake_reasoner(context):
         observed.update(context)
         encoded = json.dumps(context, ensure_ascii=False, default=str)
-        assert len(encoded) < 35_000
+        assert len(encoded) < 25_000
         assert len(context["incident"]["event_ids"]) == 40
         assert context["incident"]["timeline_total_events"] == 40
-        assert len(context["timeline"]) == 24
+        assert len(context["timeline"]) == 16
         assert context["graph"]["member_event_node_count"] == 40
-        assert len(context["graph"]["event_edges"]) <= 16
+        assert len(context["graph"]["event_edges"]) <= 12
         assert "flow_row_ids" not in context["timeline"][0]
         assert (
             context["detections"]["event_id_counts"]["reason_to_event_ids"][
@@ -1339,7 +1339,7 @@ def test_reasoner_context_is_compacted_without_reducing_full_evidence_scope(tmp_
         )
         assert len(
             context["detections"]["reason_to_event_ids"]["ISOLATION_FOREST_ANOMALY"]
-        ) <= 6
+        ) <= 4
         return {
             "tool_calls": [],
             "findings": [],
@@ -1349,7 +1349,7 @@ def test_reasoner_context_is_compacted_without_reducing_full_evidence_scope(tmp_
     _, _, summary = run_soc_investigation(flows, tmp_path, reasoner=fake_reasoner)
 
     assert summary["incident_count"] == 1
-    assert observed["incident"]["timeline_sampled_events"] == 24
+    assert observed["incident"]["timeline_sampled_events"] == 16
 
 
 def test_reasoner_timeout_is_marked_as_fallback_not_llm_success(tmp_path):
